@@ -289,7 +289,7 @@ tests/test_portfolio_verify.py::test_generate_reports_json_is_valid_json PASSED
 - **Grafana dashboard** — no visualization for queue depths, DLQ backlog, processing rates
 - **Auth/API keys** — the API is unauthenticated
 - **Schema migrations** — raw ALTER TABLE via docker exec; needs Alembic
-- **CI pipeline** — no automated test runs on push
+- **CI pipeline** — basic syntax/import checks run on push; full Docker integration tests not yet in CI
 - **Load testing** — no throughput benchmarks
 
 ## How to Describe This Project in Interviews
