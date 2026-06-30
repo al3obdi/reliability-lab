@@ -1,0 +1,62 @@
+# Optional observability profile: Grafana + Loki + Promtail
+#
+# Usage:
+#   make observability-up      # Start on top of default stack
+#   make observability-down    # Stop only observability services
+#
+# The default stack (make up) does NOT include these services.
+# They join the existing reliability-lab_default network.
+
+services:
+  loki:
+    image: grafana/loki:3.1.0
+    ports:
+      - '3100:3100'
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+    networks:
+      - default
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.1.0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./promtail-config.yml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - default
+    restart: unless-stopped
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - '3000:3000'
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_INSTALL_PLUGINS: ''
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      - default
+    restart: unless-stopped
+    depends_on:
+      - loki
+
+volumes:
+  loki_data:
+  grafana_data:
+
+networks:
+  default:
+    external: true
+    name: reliability-lab_default

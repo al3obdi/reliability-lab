@@ -2,8 +2,9 @@
 
 [![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker)](https://docs.docker.com/compose/)
-[![Tests](https://img.shields.io/badge/tests-23%20passing-brightgreen)](https://github.com/al3obdi/reliability-lab/actions)
+[![Tests](https://img.shields.io/badge/tests-35%20passing-brightgreen)](https://github.com/al3obdi/reliability-lab/actions)
 [![Portfolio Proof](https://img.shields.io/badge/portfolio%20proof-6%2F6%20scenarios-brightgreen)](reports/portfolio-verification-report.md)
+[![Observability](https://img.shields.io/badge/observability-Grafana%20%2B%20Loki-orange)](docs/observability.md)
 
 A reliability-first event processing pipeline demonstrating production-grade patterns:
 idempotency, durable messaging, source-of-truth persistence, rebuildable search indexes,
@@ -25,11 +26,12 @@ If you're a recruiter or engineering manager: [start here](PORTFOLIO.md).
 ## What to Look at First
 
 1. **[Run the Reliability Proof](#run-the-reliability-proof)** — `make portfolio-verify` proves everything works
-2. **[Architecture diagram](#architecture)** — the system topology
-3. **[Failure mode table](#failure-mode-table)** — 10 scenarios, zero data loss
-4. **[Architecture Decision Records](docs/adr/)** — why each decision was made
-5. **[Interview notes](docs/interview-notes.md)** — how to talk about this project
-6. **[Portfolio verification report](reports/portfolio-verification-report.md)** — machine-verified evidence
+2. **[Run Load/Backpressure Verification](#load-and-backpressure-evidence)** — `make load-verify` validates throughput
+3. **[Run Observability Verification](#optional-grafana--loki-observability)** — `make observability-verify` checks Grafana + Loki
+4. **[Architecture diagram](#architecture)** — the system topology
+5. **[Architecture Decision Records](docs/adr/)** — why each decision was made
+6. **[Interview notes](docs/interview-notes.md)** — how to talk about this project
+7. **[Portfolio verification report](reports/portfolio-verification-report.md)** — machine-verified evidence
 
 ## Architecture
 
@@ -71,7 +73,36 @@ POST /api/v1/messages
 
 **Retry flow:** PG failure → retry.15s (15s TTL) → retry.30s (30s TTL) → retry.60s (60s TTL) → DLQ (after 3 attempts)
 
-**Observability:** Prometheus scrapes API and Worker metrics every 15s
+**Observability:** Prometheus scrapes API and Worker metrics every 15s. Optional Grafana + Loki profile available via `make observability-up`.
+
+## Optional Grafana + Loki Observability
+
+The project includes an **optional** observability profile that adds Grafana dashboards and Loki log exploration:
+
+```bash
+# Start the optional observability stack
+make observability-up
+
+# Verify everything is working
+make observability-verify
+
+# Open Grafana
+open http://localhost:3000
+
+# Stop when done (default stack continues running)
+make observability-down
+```
+
+**Default credentials:** `admin` / `admin` (anonymous viewer access enabled)
+
+The provisioned **Reliability Lab** dashboard includes:
+- API publish/duplicate rate (timeseries)
+- Worker processed/retry/DLQ rate (timeseries)
+- 6 stat panels (publish total, processed total, DLQ total, retry total, ES failures, duplicates)
+- API + Worker latency (timeseries)
+- Loki log panels for error/retry/DLQ exploration
+
+Full documentation: [`docs/observability.md`](docs/observability.md)
 
 ## Run the Reliability Proof
 
@@ -101,6 +132,57 @@ Generates:
 - [`reports/portfolio-verification-report.md`](reports/portfolio-verification-report.md) — human-readable with evidence snippets
 - [`reports/portfolio-verification-report.json`](reports/portfolio-verification-report.json) — machine-readable
 
+## Load and Backpressure Evidence
+
+```bash
+# Run load verification (safe default: 100 messages, 5 concurrent)
+make load-verify ARGS="--count 100 --concurrency 5"
+
+# Full load test
+make load-verify ARGS="--count 1000 --concurrency 20"
+```
+
+This command (`make load-verify`) validates the pipeline under concurrent load:
+
+| What It Validates | How |
+|---|---|
+| **Throughput under load** | Publishes N messages with M concurrent connections, measures rate |
+| **Worker processing** | Verifies all published messages are eventually persisted in PostgreSQL |
+| **Queue health** | Captures RabbitMQ queue depths (main, retry, DLQ) |
+| **Persistence completion** | Waits for all messages to appear in PostgreSQL, reports timing |
+| **Observability counters** | Snapshots Prometheus metrics from API and Worker |
+| **Elasticsearch indexing** | Reports indexed/failed/pending counts per run |
+
+Generates:
+- [`reports/load-backpressure-report.md`](reports/load-backpressure-report.md) — human-readable with throughput, queue health, metrics
+- [`reports/load-backpressure-report.json`](reports/load-backpressure-report.json) — machine-readable
+
+### Worker Scaling Comparison
+
+To compare throughput with different worker counts:
+
+```bash
+# 1 worker (default)
+docker compose up -d --scale worker=1
+make load-verify ARGS="--count 500 --concurrency 20"
+
+# 3 workers
+docker compose up -d --scale worker=3
+make load-verify ARGS="--count 500 --concurrency 20"
+```
+
+Compare the `worker_messages_processed_total` rate and queue depths between runs.
+
+### Incident Postmortems
+
+The project includes three incident postmortem reports demonstrating operational readiness:
+
+- [`reports/incidents/postgres-outage-postmortem.md`](reports/incidents/postgres-outage-postmortem.md) — PG failure → retry → DLQ recovery
+- [`reports/incidents/elasticsearch-outage-postmortem.md`](reports/incidents/elasticsearch-outage-postmortem.md) — ES outage → graceful degradation → reindex recovery
+- [`reports/incidents/poison-message-dlq-postmortem.md`](reports/incidents/poison-message-dlq-postmortem.md) — Invalid payload → immediate DLQ isolation
+
+Each postmortem includes: summary, impact, detection, root cause, mitigation, prevention, metrics to watch, and runbook commands.
+
 ## Quick Start
 
 ```bash
@@ -114,7 +196,7 @@ make migrate
 make test
 ```
 
-**Expected output:** 23 passed in ~100s
+**Expected output:** 35 passed in ~100s
 
 ### Manual verification
 
@@ -280,17 +362,31 @@ tests/test_metrics.py::test_metrics_increment_on_publish PASSED
 tests/test_portfolio_verify.py::test_generate_reports_creates_files PASSED
 tests/test_portfolio_verify.py::test_generate_reports_fail_verdict PASSED
 tests/test_portfolio_verify.py::test_generate_reports_json_is_valid_json PASSED
+tests/test_load_verify.py::test_generate_reports_creates_files PASSED
+tests/test_load_verify.py::test_generate_reports_json_is_valid_json PASSED
+tests/test_load_verify.py::test_generate_reports_with_failures PASSED
+tests/test_observability.py::test_observability_compose_file_exists PASSED
+tests/test_observability.py::test_promtail_config_exists PASSED
+tests/test_observability.py::test_grafana_prometheus_datasource_exists PASSED
+tests/test_observability.py::test_grafana_loki_datasource_exists PASSED
+tests/test_observability.py::test_grafana_dashboard_provisioning_exists PASSED
+tests/test_observability.py::test_grafana_dashboard_json_exists PASSED
+tests/test_observability.py::test_docs_observability_exists PASSED
+tests/test_observability.py::test_reports_observability_proof_exists PASSED
+tests/test_observability.py::test_makefile_has_observability_targets PASSED
 
-======================== 23 passed in 102.21s ========================
+======================== 35 passed in ~100s ========================
 ```
 
 ## Production Gaps
 
-- **Grafana dashboard** — no visualization for queue depths, DLQ backlog, processing rates
-- **Auth/API keys** — the API is unauthenticated
-- **Schema migrations** — raw ALTER TABLE via docker exec; needs Alembic
+- **Kubernetes deployment** — currently Docker Compose only; no K8s manifests, Helm charts, or readiness probes
+- **APISIX gateway** — no API gateway example for rate limiting, auth, or routing
+- **Rails integration** — no example of consuming this pipeline from a Rails application
+- **Cloud deployment map** — no Terraform, cloud-specific deployment docs, or multi-region topology
+- **API auth / API keys** — the API is unauthenticated
+- **Alembic migrations** — raw ALTER TABLE via docker exec; needs proper migration tooling
 - **CI pipeline** — basic syntax/import checks run on push; full Docker integration tests not yet in CI
-- **Load testing** — no throughput benchmarks
 
 ## How to Describe This Project in Interviews
 
@@ -326,7 +422,9 @@ Prometheus ← scrape ← API (:8000/metrics) + Worker (:9100/metrics)
 ```
 reliability-lab/
 ├── docker-compose.yml
+├── docker-compose.observability.yml
 ├── prometheus.yml
+├── promtail-config.yml
 ├── .env
 ├── Makefile
 ├── requirements-dev.txt
@@ -372,8 +470,10 @@ reliability-lab/
 │   ├── inspect_dlq.py
 │   ├── seed_messages.py
 │   ├── verify_slos.py
-│   └── portfolio_verify.py
-│
+│   ├── portfolio_verify.py
+│   ├── load_verify.py
+│   └── observability_verify.py
+
 ├── tests/
 │   ├── conftest.py
 │   ├── test_health.py
@@ -382,8 +482,20 @@ reliability-lab/
 │   ├── test_elasticsearch.py
 │   ├── test_retry_dlq.py
 │   ├── test_metrics.py
-│   └── test_portfolio_verify.py
-│
+│   ├── test_portfolio_verify.py
+│   ├── test_load_verify.py
+│   └── test_observability.py
+
+├── grafana/
+│   ├── provisioning/
+│   │   ├── datasources/
+│   │   │   ├── prometheus.yml
+│   │   │   └── loki.yml
+│   │   └── dashboards/
+│   │       └── dashboard.yml
+│   └── dashboards/
+│       └── reliability-lab.json
+
 ├── reports/
 │   ├── day-2.1-patch-report.txt
 │   ├── day-3-patch-report.txt
@@ -393,10 +505,18 @@ reliability-lab/
 │   ├── day-4-verification-report.txt
 │   ├── day-5-verification-report.txt
 │   ├── portfolio-verification-report.md
-│   └── portfolio-verification-report.json
-│
+│   ├── portfolio-verification-report.json
+│   ├── load-backpressure-report.md
+│   ├── load-backpressure-report.json
+│   ├── observability-proof.md
+│   └── incidents/
+│       ├── postgres-outage-postmortem.md
+│       ├── elasticsearch-outage-postmortem.md
+│       └── poison-message-dlq-postmortem.md
+
 └── docs/
     ├── architecture.md
+    ├── observability.md
     ├── interview-notes.md
     └── adr/
         ├── 001-postgres-source-of-truth.md

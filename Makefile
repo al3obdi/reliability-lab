@@ -1,4 +1,4 @@
-.PHONY: up down logs test clean migrate inspect-dlq seed verify-slos portfolio-verify
+.PHONY: up down logs test clean migrate inspect-dlq seed verify-slos portfolio-verify load-verify observability-up observability-down observability-verify
 
 up:
 	docker compose up -d --build
@@ -32,3 +32,15 @@ verify-slos:
 
 portfolio-verify:
 	python scripts/portfolio_verify.py $(ARGS)
+
+load-verify:
+	python scripts/load_verify.py $(ARGS)
+
+observability-up:
+	docker compose -f docker-compose.observability.yml up -d
+
+observability-down:
+	docker compose -f docker-compose.observability.yml down
+
+observability-verify:
+	python scripts/observability_verify.py

@@ -1,0 +1,31 @@
+# Promtail configuration — collects Docker container logs and ships to Loki
+# Honest limitation: Docker socket access on macOS (Docker Desktop) is limited.
+# Container stdout/stderr is collected; file-based log scraping may not work
+# for all containers depending on the Docker Desktop log driver.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/reliability-lab-(.*)-1'
+        target_label: 'service'
+      # Only collect reliability-lab containers
+      - source_labels: ['__meta_docker_container_name']
+        regex: '.*reliability-lab.*'
+        action: keep

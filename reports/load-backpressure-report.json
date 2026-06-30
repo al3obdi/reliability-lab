@@ -1,0 +1,55 @@
+{
+  "report_type": "load-backpressure-verification",
+  "timestamp": "2026-06-30T12:01:44Z",
+  "input": {
+    "count": 100,
+    "concurrency": 5,
+    "customer_prefix": "push"
+  },
+  "publish": {
+    "attempted": 100,
+    "published": 100,
+    "duplicates": 0,
+    "failures": 0,
+    "duration_seconds": 0.17,
+    "rate_per_second": 596.3
+  },
+  "persistence": {
+    "pg_count": 100,
+    "indexed_count": 100,
+    "failed_index_count": 0,
+    "pending_count": 0,
+    "wait_seconds": 2.3,
+    "fully_persisted": true
+  },
+  "queues": {
+    "events.queue": 0,
+    "events.retry.15s": 0,
+    "events.retry.30s": 0,
+    "events.retry.60s": 0,
+    "events.dlq": 1
+  },
+  "dlq": {
+    "before": 1,
+    "after": 1,
+    "delta": 0,
+    "clean": true
+  },
+  "metrics": {
+    "api": {
+      "api_publish_total": 743.0,
+      "api_duplicate_total": 103.0,
+      "api_publish_failures_total": 0.0
+    },
+    "worker": {
+      "worker_messages_processed_total": 664.0,
+      "worker_messages_failed_total": 90.0,
+      "worker_messages_retried_total": 42.0,
+      "worker_messages_dlq_total": 48.0,
+      "worker_pg_insert_total": 664.0,
+      "worker_es_index_total": 629.0,
+      "worker_es_index_failed_total": 35.0
+    }
+  },
+  "elasticsearch_total_documents": 612
+}

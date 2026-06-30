@@ -144,6 +144,14 @@ events.exchange (topic, durable)
 
 **Role:** Metrics collection. Scrapes API (:8000/metrics) and Worker (:9100/metrics) every 15s. 7-day retention.
 
+### Grafana (port 3000, optional)
+
+**Role:** Dashboard visualization. Provisioned with the **Reliability Lab** dashboard (11 panels). Queries Prometheus for metrics and Loki for logs. Started via `make observability-up`. Not required for default `make up`.
+
+### Loki + Promtail (port 3100, optional)
+
+**Role:** Log aggregation. Promtail collects Docker container logs via the Docker socket and ships them to Loki. Grafana queries Loki for log exploration. Started via `make observability-up`. Not required for default `make up`.
+
 ## Data Flows
 
 ### Happy Path
@@ -227,8 +235,10 @@ without SSHing into containers: "How many messages are in the DLQ right now?"
 
 ## Production Gaps
 
-- **Grafana dashboard** — no visualization for queue depths, DLQ backlog, processing rates
+- **Kubernetes deployment** — no K8s manifests, Helm charts, or readiness probes
+- **APISIX gateway** — no API gateway example
+- **Rails integration** — no example of consuming this pipeline from Rails
+- **Cloud deployment** — no Terraform or multi-region topology docs
 - **API auth** — no authentication or API keys
 - **Schema migrations** — raw ALTER TABLE via docker exec; needs Alembic
-- **CI pipeline** — no automated test runs on push
-- **Load testing** — no throughput benchmarks
+- **CI pipeline** — no automated Docker integration test runs on push

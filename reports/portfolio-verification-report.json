@@ -1,19 +1,19 @@
 {
   "verdict": "PASS",
-  "timestamp": "2026-06-30T10:49:47Z",
+  "timestamp": "2026-06-30T12:01:40Z",
   "scenarios": [
     {
       "id": "A",
       "name": "Happy path",
       "pass": true,
       "evidence": {
-        "message_id": "42b4a67b-df3e-49e0-bba1-eca81b4ef3f5",
+        "message_id": "bfd61430-20aa-4f66-9d34-693ce569a452",
         "published": {
           "status": 202,
           "body": {
-            "message_id": "42b4a67b-df3e-49e0-bba1-eca81b4ef3f5",
+            "message_id": "bfd61430-20aa-4f66-9d34-693ce569a452",
             "status": "published",
-            "published_at": "2026-06-30T10:47:12.162063Z",
+            "published_at": "2026-06-30T11:59:15.837401Z",
             "duplicate": false
           }
         },
@@ -29,20 +29,20 @@
       "name": "Duplicate idempotency",
       "pass": true,
       "evidence": {
-        "message_id": "fa5ddfac-e003-42b1-8cd6-2af22b754ed4",
+        "message_id": "1feb94c4-ce88-4445-8a57-50bc6b525b3e",
         "first_publish": {
           "status": 202,
           "body": {
-            "message_id": "fa5ddfac-e003-42b1-8cd6-2af22b754ed4",
+            "message_id": "1feb94c4-ce88-4445-8a57-50bc6b525b3e",
             "status": "published",
-            "published_at": "2026-06-30T10:47:12.307121Z",
+            "published_at": "2026-06-30T11:59:15.979809Z",
             "duplicate": false
           }
         },
         "second_publish": {
           "status": 202,
           "body": {
-            "message_id": "fa5ddfac-e003-42b1-8cd6-2af22b754ed4",
+            "message_id": "1feb94c4-ce88-4445-8a57-50bc6b525b3e",
             "status": "duplicate",
             "published_at": null,
             "duplicate": true
@@ -56,14 +56,14 @@
       "name": "Elasticsearch outage",
       "pass": true,
       "evidence": {
-        "message_id": "d5bb4799-146e-420c-926b-9caee09788f2",
+        "message_id": "267257cb-2ba0-43ff-ba04-8168a607727d",
         "es_stopped": true,
         "published": {
           "status": 202,
           "body": {
-            "message_id": "d5bb4799-146e-420c-926b-9caee09788f2",
+            "message_id": "267257cb-2ba0-43ff-ba04-8168a607727d",
             "status": "published",
-            "published_at": "2026-06-30T10:47:16.900556Z",
+            "published_at": "2026-06-30T11:59:20.646888Z",
             "duplicate": false
           }
         },
@@ -71,7 +71,7 @@
         "pg_row": "completed|failed",
         "index_status_after_es_down": "completed|failed",
         "es_started": true,
-        "reindex_output": "[ES] Index already exists: messages-v1\n[REINDEX] Found 3 failed rows.\n[REINDEX] OK: 44444444-5555-6666-7777-888888888888\n[REINDEX] OK: d771aa70-60e9-4a81-93f0-cf81fc6a90ab\n[REINDEX] OK: d5bb4799-146e-420c-926b-9caee09788f2\n[REINDEX] Done: 3/3 succeeded.",
+        "reindex_output": "[ES] Index already exists: messages-v1\n[REINDEX] Found 3 failed rows.\n[REINDEX] OK: 44444444-5555-6666-7777-888888888888\n[REINDEX] OK: 6da4fb84-f58c-42b0-a0b2-626fcea61555\n[REINDEX] OK: 267257cb-2ba0-43ff-ba04-8168a607727d\n[REINDEX] Done: 3/3 succeeded.",
         "pg_row_after_reindex": "completed|indexed",
         "es_document_exists_after_reindex": true
       }
@@ -81,15 +81,15 @@
       "name": "PostgreSQL failure → retry/DLQ",
       "pass": true,
       "evidence": {
-        "message_id": "a61f6f10-a80f-4113-b21c-879288dea4bd",
+        "message_id": "6acfe348-d4e7-4d4d-b040-9b5d6004fbda",
         "dlq_before": 0,
         "pg_stopped": true,
         "published": {
           "status": 202,
           "body": {
-            "message_id": "a61f6f10-a80f-4113-b21c-879288dea4bd",
+            "message_id": "6acfe348-d4e7-4d4d-b040-9b5d6004fbda",
             "status": "published",
-            "published_at": "2026-06-30T10:47:49.514336Z",
+            "published_at": "2026-06-30T11:59:42.020510Z",
             "duplicate": false
           }
         },
@@ -132,11 +132,11 @@
         ],
         "api_target_up": true,
         "worker_target_up": true,
-        "api_publish_total": 99.0,
-        "api_duplicate_total": 35.0,
-        "worker_processed": 48.0,
-        "worker_dlq_total": 15.0,
-        "worker_es_failed": 11.0
+        "api_publish_total": 643.0,
+        "api_duplicate_total": 103.0,
+        "worker_processed": 564.0,
+        "worker_dlq_total": 47.0,
+        "worker_es_failed": 35.0
       }
     }
   ],
@@ -144,8 +144,8 @@
     "total": 6,
     "passed": 6,
     "failed": 0,
-    "api_publish_total": 99.0,
-    "worker_processed": 48.0,
-    "worker_dlq_total": 15.0
+    "api_publish_total": 643.0,
+    "worker_processed": 564.0,
+    "worker_dlq_total": 47.0
   }
 }
