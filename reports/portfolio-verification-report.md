@@ -1,6 +1,6 @@
 # Portfolio Verification Report
 
-**Generated:** 2026-06-30T10:27:23Z
+**Generated:** 2026-06-30T10:39:15Z
 **Verdict:** ✅ PASS
 
 ## Scenario Results
@@ -22,13 +22,13 @@
 
 ```json
 {
-  "message_id": "982faaf4-9216-4f7d-850b-817d77c7bcc5",
+  "message_id": "349c4f00-0e1c-4b66-9b5e-ab8e831ce1e2",
   "published": {
     "status": 202,
     "body": {
-      "message_id": "982faaf4-9216-4f7d-850b-817d77c7bcc5",
+      "message_id": "349c4f00-0e1c-4b66-9b5e-ab8e831ce1e2",
       "status": "published",
-      "published_at": "2026-06-30T10:24:51.726573Z",
+      "published_at": "2026-06-30T10:36:48.563506Z",
       "duplicate": false
     }
   },
@@ -46,20 +46,20 @@
 
 ```json
 {
-  "message_id": "0291dfce-2b7b-4502-8402-885343bef854",
+  "message_id": "441a7ece-6fee-41a7-8289-1da5d20160d9",
   "first_publish": {
     "status": 202,
     "body": {
-      "message_id": "0291dfce-2b7b-4502-8402-885343bef854",
+      "message_id": "441a7ece-6fee-41a7-8289-1da5d20160d9",
       "status": "published",
-      "published_at": "2026-06-30T10:24:51.852748Z",
+      "published_at": "2026-06-30T10:36:48.723763Z",
       "duplicate": false
     }
   },
   "second_publish": {
     "status": 202,
     "body": {
-      "message_id": "0291dfce-2b7b-4502-8402-885343bef854",
+      "message_id": "441a7ece-6fee-41a7-8289-1da5d20160d9",
       "status": "duplicate",
       "published_at": null,
       "duplicate": true
@@ -75,14 +75,14 @@
 
 ```json
 {
-  "message_id": "f78b4e15-4782-449e-b221-1fafc24b1225",
+  "message_id": "5240c701-826e-412c-8d05-2d0024631f59",
   "es_stopped": true,
   "published": {
     "status": 202,
     "body": {
-      "message_id": "f78b4e15-4782-449e-b221-1fafc24b1225",
+      "message_id": "5240c701-826e-412c-8d05-2d0024631f59",
       "status": "published",
-      "published_at": "2026-06-30T10:24:56.500082Z",
+      "published_at": "2026-06-30T10:36:53.435533Z",
       "duplicate": false
     }
   },
@@ -90,7 +90,7 @@
   "pg_row": "completed|failed",
   "index_status_after_es_down": "completed|failed",
   "es_started": true,
-  "reindex_output": "[ES] Index already exists: messages-v1\n[REINDEX] Found 1 failed rows.\n[REINDEX] OK: f78b4e15-4782-449e-b221-1fafc24b1225\n[REINDEX] Done: 1/1 succeeded.",
+  "reindex_output": "[ES] Index already exists: messages-v1\n[REINDEX] Found 4 failed rows.\n[REINDEX] OK: 44444444-5555-6666-7777-888888888888\n[REINDEX] OK: fcefc061-3a8f-4de8-87c9-47afcc9400e5\n[REINDEX] OK: 05f203dc-765b-4ea1-b6f2-c2efc81e921b\n[REINDEX] OK: 5240c701-826e-412c-8d05-2d0024631f59\n[REINDEX] Done: 4/4 succeeded.",
   "pg_row_after_reindex": "completed|indexed",
   "es_document_exists_after_reindex": true
 }
@@ -102,15 +102,15 @@
 
 ```json
 {
-  "message_id": "ebc2324d-7715-4f57-be69-37d69d1e6cd7",
+  "message_id": "58b94144-3a4a-4596-b416-5ed299a37a32",
   "dlq_before": 0,
   "pg_stopped": true,
   "published": {
     "status": 202,
     "body": {
-      "message_id": "ebc2324d-7715-4f57-be69-37d69d1e6cd7",
+      "message_id": "58b94144-3a4a-4596-b416-5ed299a37a32",
       "status": "published",
-      "published_at": "2026-06-30T10:25:25.261796Z",
+      "published_at": "2026-06-30T10:37:14.587261Z",
       "duplicate": false
     }
   },
@@ -157,11 +157,11 @@
   ],
   "api_target_up": true,
   "worker_target_up": true,
-  "api_publish_total": 52.0,
-  "api_duplicate_total": 21.0,
-  "worker_processed": 9.0,
-  "worker_dlq_total": 5.0,
-  "worker_es_failed": 3.0
+  "api_publish_total": 82.0,
+  "api_duplicate_total": 30.0,
+  "worker_processed": 34.0,
+  "worker_dlq_total": 11.0,
+  "worker_es_failed": 8.0
 }
 ```
 

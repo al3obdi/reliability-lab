@@ -1,8 +1,35 @@
 # Reliability Lab — Arabic Event Processing Pipeline
 
+[![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
+[![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker)](https://docs.docker.com/compose/)
+[![Tests](https://img.shields.io/badge/tests-23%20passing-brightgreen)](https://github.com/al3obdi/reliability-lab/actions)
+[![Portfolio Proof](https://img.shields.io/badge/portfolio%20proof-6%2F6%20scenarios-brightgreen)](reports/portfolio-verification-report.md)
+
 A reliability-first event processing pipeline demonstrating production-grade patterns:
 idempotency, durable messaging, source-of-truth persistence, rebuildable search indexes,
 bounded retries, dead-letter queues, and Prometheus observability.
+
+## Why This Project Matters
+
+This project demonstrates the **reliability patterns used in backend and platform engineering** at companies that process millions of events. It's not a toy — it's a focused implementation of the same architectural decisions you'd make in a production system:
+
+- **Idempotency** — Redis SET NX + PostgreSQL ON CONFLICT DO NOTHING (defense in depth)
+- **Durable messaging** — RabbitMQ with persistent messages, publisher confirms, consumer ACKs
+- **Source-of-truth persistence** — PostgreSQL as the authoritative store; everything else is derived
+- **Derived indexing** — Elasticsearch is rebuildable from PostgreSQL at any time
+- **Bounded retries** — TTL-based retry queues (15s/30s/60s) with Dead Letter Queue
+- **Observability** — Prometheus metrics on every state transition
+
+If you're a recruiter or engineering manager: [start here](PORTFOLIO.md).
+
+## What to Look at First
+
+1. **[Run the Reliability Proof](#run-the-reliability-proof)** — `make portfolio-verify` proves everything works
+2. **[Architecture diagram](#architecture)** — the system topology
+3. **[Failure mode table](#failure-mode-table)** — 10 scenarios, zero data loss
+4. **[Architecture Decision Records](docs/adr/)** — why each decision was made
+5. **[Interview notes](docs/interview-notes.md)** — how to talk about this project
+6. **[Portfolio verification report](reports/portfolio-verification-report.md)** — machine-verified evidence
 
 ## Architecture
 
@@ -71,8 +98,8 @@ This single command (`make portfolio-verify`) runs **6 end-to-end scenarios** th
 | **F. Metrics evidence** | API + Worker /metrics endpoints + Prometheus targets all UP |
 
 Generates:
-- `reports/portfolio-verification-report.md` — human-readable with evidence snippets
-- `reports/portfolio-verification-report.json` — machine-readable
+- [`reports/portfolio-verification-report.md`](reports/portfolio-verification-report.md) — human-readable with evidence snippets
+- [`reports/portfolio-verification-report.json`](reports/portfolio-verification-report.json) — machine-readable
 
 ## Quick Start
 
@@ -87,7 +114,7 @@ make migrate
 make test
 ```
 
-**Expected output:** 20 passed in ~100s
+**Expected output:** 23 passed in ~100s
 
 ### Manual verification
 
@@ -189,6 +216,12 @@ make inspect-dlq
 - `scripts/seed_messages.py` — load generator with Arabic sample data
 - `scripts/verify_slos.py` — SLO verification from Prometheus metrics
 
+### Day 6: Portfolio Evidence Layer
+- `scripts/portfolio_verify.py` — 6 end-to-end reliability scenarios
+- [Architecture Decision Records](docs/adr/) — 5 ADRs documenting every design choice
+- [Interview notes](docs/interview-notes.md) — 60-second and 3-minute explanations
+- [Portfolio verification report](reports/portfolio-verification-report.md) — machine-verified evidence
+
 ## Reliability Principles
 
 ### PostgreSQL is the Source of Truth
@@ -244,8 +277,11 @@ tests/test_metrics.py::test_api_metrics_has_custom_counters PASSED
 tests/test_metrics.py::test_worker_metrics_endpoint PASSED
 tests/test_metrics.py::test_worker_health_endpoint PASSED
 tests/test_metrics.py::test_metrics_increment_on_publish PASSED
+tests/test_portfolio_verify.py::test_generate_reports_creates_files PASSED
+tests/test_portfolio_verify.py::test_generate_reports_fail_verdict PASSED
+tests/test_portfolio_verify.py::test_generate_reports_json_is_valid_json PASSED
 
-======================== 20 passed in 100.78s ========================
+======================== 23 passed in 102.21s ========================
 ```
 
 ## Production Gaps
@@ -295,6 +331,11 @@ reliability-lab/
 ├── Makefile
 ├── requirements-dev.txt
 ├── README.md
+├── PORTFOLIO.md
+│
+├── .github/
+│   └── workflows/
+│       └── ci.yml
 │
 ├── api/
 │   ├── Dockerfile
@@ -340,7 +381,8 @@ reliability-lab/
 │   ├── test_postgres.py
 │   ├── test_elasticsearch.py
 │   ├── test_retry_dlq.py
-│   └── test_metrics.py
+│   ├── test_metrics.py
+│   └── test_portfolio_verify.py
 │
 ├── reports/
 │   ├── day-2.1-patch-report.txt
@@ -349,7 +391,9 @@ reliability-lab/
 │   ├── day-3-verification-report.txt
 │   ├── day-4-report.txt
 │   ├── day-4-verification-report.txt
-│   └── day-5-verification-report.txt
+│   ├── day-5-verification-report.txt
+│   ├── portfolio-verification-report.md
+│   └── portfolio-verification-report.json
 │
 └── docs/
     ├── architecture.md
