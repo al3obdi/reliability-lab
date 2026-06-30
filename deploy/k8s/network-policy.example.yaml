@@ -1,0 +1,122 @@
+# Example NetworkPolicy — requires a CNI that supports NetworkPolicy (Calico, Cilium, etc.)
+# This is a READINESS EXAMPLE, not required for local development.
+#
+# Design:
+# - API pods can receive ingress on port 8000 from anywhere (via ingress controller)
+# - API pods can egress to RabbitMQ, Redis, and Prometheus scrape
+# - Worker pods can egress to RabbitMQ, PostgreSQL, Redis, Elasticsearch
+# - Worker pods expose port 9100 for Prometheus scraping
+# - All other traffic is denied by default
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-network-policy
+  labels:
+    app: reliability-lab
+spec:
+  podSelector:
+    matchLabels:
+      app: reliability-lab
+      component: api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from ingress controller (any source — ingress handles auth)
+    - from: []
+      ports:
+        - port: 8000
+          protocol: TCP
+  egress:
+    # Allow API to reach RabbitMQ
+    - to:
+        - podSelector:
+            matchLabels:
+              app: rabbitmq  # if RabbitMQ runs in-cluster
+      ports:
+        - port: 5672
+          protocol: TCP
+    # Allow API to reach Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis  # if Redis runs in-cluster
+      ports:
+        - port: 6379
+          protocol: TCP
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-network-policy
+  labels:
+    app: reliability-lab
+spec:
+  podSelector:
+    matchLabels:
+      app: reliability-lab
+      component: worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow Prometheus to scrape metrics
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 9100
+          protocol: TCP
+  egress:
+    # Worker → RabbitMQ
+    - to:
+        - podSelector:
+            matchLabels:
+              app: rabbitmq
+      ports:
+        - port: 5672
+          protocol: TCP
+    # Worker → PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Worker → Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
+          protocol: TCP
+    # Worker → Elasticsearch
+    - to:
+        - podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - port: 9200
+          protocol: TCP
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP

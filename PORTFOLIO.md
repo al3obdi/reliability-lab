@@ -97,20 +97,42 @@ make observability-up    # optional Grafana + Loki
 | **Failure-mode thinking** | 10 documented failure scenarios, zero data loss in all cases, incident postmortems |
 | **Documentation and tests as defaults** | 5 ADRs, architecture docs, interview notes, 35 tests, 6 verification scenarios |
 
+## Role Stack Alignment
+
+This section maps the project's technology choices to the specific tools and platforms
+mentioned in backend/platform reliability job descriptions.
+
+| Stack Component | Where It Appears in This Project |
+|---|---|
+| **Python** | FastAPI (API) + aio-pika (Worker) — core pipeline implementation |
+| **PostgreSQL** | Source of truth — all messages persisted with ON CONFLICT DO NOTHING |
+| **Elasticsearch** | Derived search index — rebuildable from PostgreSQL, Arabic analyzer |
+| **Redis** | Idempotency key store — SET NX with 24h TTL |
+| **RabbitMQ** | Event pipeline — durable exchange, TTL retry queues, Dead Letter Queue |
+| **Kubernetes** | [Readiness manifests](deploy/k8s/) — Deployment, Service, ConfigMap, Secret, HPA, NetworkPolicy |
+| **AWS / GCP** | [Cloud deployment map](docs/cloud-deployment-map.md) — service mapping with cost estimates |
+| **APISIX** | [Gateway readiness pack](deploy/apisix/) — routes, rate limiting, health checks, traffic splitting |
+| **Grafana / Loki** | [Optional observability profile](docs/observability.md) — provisioned dashboard, log exploration |
+| **Ruby on Rails** | [Rails publisher example](examples/rails-event-publisher/) — service object for publishing events |
+| **SLO-driven engineering** | [SLO & incident readiness](docs/slo-and-incident-readiness.md) — proposed SLOs, PromQL alerts, incident workflow |
+| **Distributed systems** | Decoupled ingestion/processing, bounded retries, derived stores, defense-in-depth idempotency |
+
 ## Honest Positioning
 
 This is a **local reliability lab**, not a production billion-event platform. It demonstrates that I understand the patterns — not that I've run them at scale.
 
 What's missing for production:
-- Kubernetes deployment manifests, Helm charts, readiness probes
-- APISIX or similar API gateway for rate limiting and auth
-- Rails integration example
-- Cloud deployment map (Terraform, multi-region)
+- Real production deployment (no cloud account, no Terraform, no live environment)
+- Real Rails app integration (the example is a standalone service object)
 - API authentication / API keys
 - Alembic schema migrations
 - Full CI pipeline with Docker integration tests
 
-The architectural decisions — source of truth, derived stores, bounded retries, defense in depth for idempotency, observability from day one — are the same decisions you make at scale.
+The architectural decisions — source of truth, derived stores, bounded retries,
+defense in depth for idempotency, observability from day one — are the same
+decisions you make at scale. The readiness packs (Kubernetes manifests, APISIX
+routes, cloud deployment map, Rails integration, SLO proposals) demonstrate
+platform engineering breadth without pretending to be production infrastructure.
 
 ## Best Interview Talking Points
 

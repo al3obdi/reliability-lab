@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reliability-lab-config
+  labels:
+    app: reliability-lab
+data:
+  # Non-secret configuration — safe to commit
+  # Connection URLs are in the Secret, not here
+
+  # Elasticsearch (derived store — non-critical)
+  ELASTICSEARCH_URL: "http://elasticsearch:9200"
+
+  # Queue names (must match RabbitMQ topology)
+  EXCHANGE_NAME: "events.exchange"
+  QUEUE_NAME: "events.queue"
+  DLQ_NAME: "events.dlq"
+  RETRY_15S_QUEUE: "retry.15s"
+  RETRY_30S_QUEUE: "retry.30s"
+  RETRY_60S_QUEUE: "retry.60s"
+
+  # Retry configuration
+  MAX_RETRIES: "3"
+
+  # Redis key TTL (24 hours)
+  IDEMPOTENCY_TTL_SECONDS: "86400"
+
+  # Prometheus scrape — these are informational, not used by the app
+  PROMETHEUS_SCRAPE_INTERVAL: "15s"

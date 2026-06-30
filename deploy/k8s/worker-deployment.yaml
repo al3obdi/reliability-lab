@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    app: reliability-lab
+    component: worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: reliability-lab
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: reliability-lab
+        component: worker
+    spec:
+      containers:
+        - name: worker
+          image: reliability-lab/worker:latest  # replace with real registry + tag
+          ports:
+            - containerPort: 9100
+              name: metrics
+          envFrom:
+            - configMapRef:
+                name: reliability-lab-config
+            - secretRef:
+                name: reliability-lab-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9100
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # No readiness probe — worker has no incoming traffic.
+          # Liveness ensures the process is alive and consuming.
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+      terminationGracePeriodSeconds: 60  # longer: allow in-flight messages to finish

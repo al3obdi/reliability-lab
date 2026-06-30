@@ -1,0 +1,128 @@
+# APISIX Route Examples — Reliability Lab
+# These are example route definitions for the Admin API (port 9180).
+# Apply with: curl -s http://localhost:9180/apisix/admin/routes/{id} -H 'X-API-KEY: ...' -X PUT -d @route.json
+# See README.md for full context.
+
+# ─────────────────────────────────────────────────────────
+# Route 1: Message ingestion — POST /api/v1/messages
+# ─────────────────────────────────────────────────────────
+routes:
+  - id: "reliability-lab-messages"
+    name: "Message Ingestion"
+    description: "Route POST /api/v1/messages to the FastAPI service"
+    uri: "/api/v1/messages"
+    methods:
+      - POST
+    upstream:
+      type: roundrobin
+      scheme: http
+      nodes:
+        "api:8000": 1
+      # Active health check — probe /health every 10s
+      checks:
+        active:
+          type: http
+          http_path: /health
+          healthy:
+            interval: 10
+            successes: 2
+          unhealthy:
+            interval: 5
+            http_failures: 3
+    plugins:
+      # Rate limiting: 100 requests per second per consumer IP
+      limit-count:
+        count: 100
+        time_window: 1
+        rejected_code: 429
+        rejected_msg: "Too many requests. Please slow down."
+        key_type: var
+        key: remote_addr
+      # Request size limit: 1MB max body
+      client-control:
+        max_body_size: 1048576
+
+# ─────────────────────────────────────────────────────────
+# Route 2: Health check — GET /health
+# ─────────────────────────────────────────────────────────
+  - id: "reliability-lab-health"
+    name: "Health Check"
+    description: "Route GET /health to the API health endpoint"
+    uri: "/health"
+    methods:
+      - GET
+    upstream:
+      type: roundrobin
+      scheme: http
+      nodes:
+        "api:8000": 1
+
+# ─────────────────────────────────────────────────────────
+# Route 3: Readiness check — GET /ready
+# ─────────────────────────────────────────────────────────
+  - id: "reliability-lab-ready"
+    name: "Readiness Check"
+    description: "Route GET /ready to the API readiness endpoint"
+    uri: "/ready"
+    methods:
+      - GET
+    upstream:
+      type: roundrobin
+      scheme: http
+      nodes:
+        "api:8000": 1
+
+# ─────────────────────────────────────────────────────────
+# Route 4: Prometheus metrics — GET /metrics (API)
+# ─────────────────────────────────────────────────────────
+  - id: "reliability-lab-metrics"
+    name: "API Metrics"
+    description: "Route GET /metrics to the API Prometheus endpoint"
+    uri: "/metrics"
+    methods:
+      - GET
+    upstream:
+      type: roundrobin
+      scheme: http
+      nodes:
+        "api:8000": 1
+
+# ─────────────────────────────────────────────────────────
+# Route 5: Traffic splitting example (canary)
+# ─────────────────────────────────────────────────────────
+# Uncomment and adjust for canary deployments.
+# This sends 90% of traffic to the stable API and 10% to canary.
+#
+#  - id: "reliability-lab-messages-canary"
+#    name: "Message Ingestion (Canary)"
+#    uri: "/api/v1/messages"
+#    methods:
+#      - POST
+#    upstream:
+#      type: roundrobin
+#      scheme: http
+#      nodes:
+#        "api-stable:8000": 9    # 90% traffic
+#        "api-canary:8000": 1    # 10% traffic
+#    plugins:
+#      traffic-split:
+#        rules:
+#          - weighted_upstreams:
+#              - upstream:
+#                  name: api-stable
+#                  weight: 90
+#              - upstream:
+#                  name: api-canary
+#                  weight: 10
+
+# ─────────────────────────────────────────────────────────
+# Global rules (applied to all routes)
+# ─────────────────────────────────────────────────────────
+global_rules:
+  - id: "reliability-lab-cors"
+    plugins:
+      cors:
+        allow_origins: "https://reliability-lab.example.com"
+        allow_methods: "GET,POST,OPTIONS"
+        allow_headers: "Content-Type,Authorization"
+        max_age: 3600

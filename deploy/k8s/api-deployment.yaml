@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels:
+    app: reliability-lab
+    component: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: reliability-lab
+      component: api
+  template:
+    metadata:
+      labels:
+        app: reliability-lab
+        component: api
+    spec:
+      containers:
+        - name: api
+          image: reliability-lab/api:latest  # replace with real registry + tag
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: reliability-lab-config
+            - secretRef:
+                name: reliability-lab-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+          # Security context — run as non-root
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+      # Graceful shutdown: give connections time to drain
+      terminationGracePeriodSeconds: 30

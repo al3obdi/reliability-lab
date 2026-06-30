@@ -378,15 +378,41 @@ tests/test_observability.py::test_makefile_has_observability_targets PASSED
 ======================== 35 passed in ~100s ========================
 ```
 
-## Production Gaps
+## Production Readiness Packs
 
-- **Kubernetes deployment** — currently Docker Compose only; no K8s manifests, Helm charts, or readiness probes
-- **APISIX gateway** — no API gateway example for rate limiting, auth, or routing
-- **Rails integration** — no example of consuming this pipeline from a Rails application
-- **Cloud deployment map** — no Terraform, cloud-specific deployment docs, or multi-region topology
+This project includes three **readiness packs** — documentation, manifests, and examples
+that demonstrate platform engineering breadth without changing the core runtime behavior.
+The default stack remains Docker Compose local lab.
+
+### Pack 1: Load/Backpressure Evidence + Incident Postmortems
+
+- `make load-verify` — concurrent load testing with persistence verification, queue health, DLQ delta
+- 3 incident postmortems: [PG outage](reports/incidents/postgres-outage-postmortem.md), [ES outage](reports/incidents/elasticsearch-outage-postmortem.md), [poison message](reports/incidents/poison-message-dlq-postmortem.md)
+- Load/backpressure reports: [markdown](reports/load-backpressure-report.md) + [json](reports/load-backpressure-report.json)
+
+### Pack 2: Optional Grafana + Loki Observability
+
+- `make observability-up` — provisioned Grafana dashboard (11 panels) + Loki log exploration
+- Promtail log shipping, Prometheus + Loki datasources
+- [Observability docs](docs/observability.md) + [verification proof](reports/observability-proof.md)
+
+### Pack 3: Kubernetes / APISIX / Cloud / Rails Readiness
+
+- **[Kubernetes manifests](deploy/k8s/)** — Deployment, Service, ConfigMap, Secret, HPA, NetworkPolicy examples
+- **[APISIX gateway](deploy/apisix/)** — route definitions, rate limiting, health checks, traffic splitting examples
+- **[Cloud deployment map](docs/cloud-deployment-map.md)** — AWS and GCP service mapping with cost estimates
+- **[Rails integration](examples/rails-event-publisher/)** — service object example for publishing from Rails
+- **[SLO & incident readiness](docs/slo-and-incident-readiness.md)** — proposed SLOs, PromQL alerts, incident workflow
+
+**These packs are readiness evidence and deployment guidance, not production claims.**
+
+## Remaining Production Gaps
+
 - **API auth / API keys** — the API is unauthenticated
 - **Alembic migrations** — raw ALTER TABLE via docker exec; needs proper migration tooling
 - **CI pipeline** — basic syntax/import checks run on push; full Docker integration tests not yet in CI
+- **Real production deployment** — no cloud account, no Terraform, no live environment
+- **Real Rails app integration** — the Rails example is a standalone service object, not a full app
 
 ## How to Describe This Project in Interviews
 
@@ -497,6 +523,7 @@ reliability-lab/
 │       └── reliability-lab.json
 
 ├── reports/
+│   ├── current-status.md
 │   ├── day-2.1-patch-report.txt
 │   ├── day-3-patch-report.txt
 │   ├── day-3-report.txt
@@ -513,11 +540,34 @@ reliability-lab/
 │       ├── postgres-outage-postmortem.md
 │       ├── elasticsearch-outage-postmortem.md
 │       └── poison-message-dlq-postmortem.md
-
+│
+├── deploy/
+│   ├── k8s/
+│   │   ├── README.md
+│   │   ├── api-deployment.yaml
+│   │   ├── api-service.yaml
+│   │   ├── worker-deployment.yaml
+│   │   ├── configmap.yaml
+│   │   ├── secret.example.yaml
+│   │   ├── worker-hpa.yaml
+│   │   └── network-policy.example.yaml
+│   └── apisix/
+│       ├── README.md
+│       ├── routes.example.yaml
+│       ├── config.example.yaml
+│       └── docker-compose.apisix.example.yml
+│
+├── examples/
+│   └── rails-event-publisher/
+│       ├── README.md
+│       └── customer_message_publisher.rb
+│
 └── docs/
     ├── architecture.md
     ├── observability.md
     ├── interview-notes.md
+    ├── cloud-deployment-map.md
+    ├── slo-and-incident-readiness.md
     └── adr/
         ├── 001-postgres-source-of-truth.md
         ├── 002-elasticsearch-derived-store.md
