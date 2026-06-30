@@ -1,4 +1,4 @@
-.PHONY: up down logs test clean migrate inspect-dlq seed verify-slos
+.PHONY: up down logs test clean migrate inspect-dlq seed verify-slos portfolio-verify
 
 up:
 	docker compose up -d --build
@@ -29,3 +29,6 @@ seed:
 
 verify-slos:
 	python scripts/verify_slos.py $(ARGS)
+
+portfolio-verify:
+	python scripts/portfolio_verify.py $(ARGS)

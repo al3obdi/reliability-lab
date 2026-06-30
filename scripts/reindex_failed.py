@@ -12,6 +12,10 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "worker"))
+# When running inside the worker container via mounted /scripts, the worker
+# code lives at /app, not ../worker. Try both paths.
+if not os.path.isdir(os.path.join(os.path.dirname(__file__), "..", "worker")):
+    sys.path.insert(0, "/app")
 
 from services.postgres import get_pool, get_failed_index_rows, mark_indexed, mark_index_failed, close_pool
 from services.elasticsearch import get_client, ensure_index, index_message, close_client
@@ -53,9 +57,22 @@ async def reindex_failed(limit: int = 100) -> int:
     return success
 
 
+async def _reindex(limit: int) -> int:
+    """Wrapper that handles cleanup within the same event loop."""
+    try:
+        return await reindex_failed(limit=limit)
+    finally:
+        try:
+            await close_pool()
+        except Exception:
+            pass
+        try:
+            await close_client()
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else 100
-    count = asyncio.run(reindex_failed(limit=limit))
-    asyncio.run(close_pool())
-    asyncio.run(close_client())
-    sys.exit(0 if count > 0 else 0)
+    count = asyncio.run(_reindex(limit=limit))
+    sys.exit(0)

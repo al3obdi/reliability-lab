@@ -46,6 +46,34 @@ POST /api/v1/messages
 
 **Observability:** Prometheus scrapes API and Worker metrics every 15s
 
+## Run the Reliability Proof
+
+```bash
+# 1. Start all 7 services
+make up
+
+# 2. Run schema migration
+make migrate
+
+# 3. Run the portfolio verification suite
+make portfolio-verify
+```
+
+This single command (`make portfolio-verify`) runs **6 end-to-end scenarios** that prove the system's reliability behavior:
+
+| Scenario | What It Proves |
+|---|---|
+| **A. Happy path** | Message flows API → PG → ES correctly |
+| **B. Duplicate idempotency** | Same message_id twice → `duplicate=true`, PG row count = 1 |
+| **C. Elasticsearch outage** | Stop ES → publish → PG still works → restart ES → reindex recovers |
+| **D. PostgreSQL failure → DLQ** | Stop PG → publish → 3 retries (15s/30s/60s) → message lands in DLQ |
+| **E. Invalid payload → DLQ** | Malformed message → immediate DLQ, no retries |
+| **F. Metrics evidence** | API + Worker /metrics endpoints + Prometheus targets all UP |
+
+Generates:
+- `reports/portfolio-verification-report.md` — human-readable with evidence snippets
+- `reports/portfolio-verification-report.json` — machine-readable
+
 ## Quick Start
 
 ```bash
@@ -302,7 +330,8 @@ reliability-lab/
 │   ├── reindex_failed.py
 │   ├── inspect_dlq.py
 │   ├── seed_messages.py
-│   └── verify_slos.py
+│   ├── verify_slos.py
+│   └── portfolio_verify.py
 │
 ├── tests/
 │   ├── conftest.py
@@ -323,5 +352,12 @@ reliability-lab/
 │   └── day-5-verification-report.txt
 │
 └── docs/
-    └── architecture.md
+    ├── architecture.md
+    ├── interview-notes.md
+    └── adr/
+        ├── 001-postgres-source-of-truth.md
+        ├── 002-elasticsearch-derived-store.md
+        ├── 003-redis-idempotency.md
+        ├── 004-rabbitmq-bounded-retries-dlq.md
+        └── 005-observability-prometheus.md
 ```
