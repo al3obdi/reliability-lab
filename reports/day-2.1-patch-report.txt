@@ -1,0 +1,79 @@
+═══════════════════════════════════════════════════════════
+Reliability Lab — Day 2.1 Patch Report
+تصحيح سلوك إعادة المحاولة في worker
+═══════════════════════════════════════════════════════════
+
+📋 المشكلة
+──────────
+الملف: worker/processor.py
+السطر: async with message.process()
+
+في aio-pika، process() تستخدم افتراضيًا requeue=False.
+عند فشل PostgreSQL، كانت الرسالة تُرفض بدون إعادة إدراج في
+الطابور — أي تُفقد تمامًا.
+
+هذا يجعل الادعاء السابق:
+"PG down → no ACK → RabbitMQ redelivers"
+غير دقيق. الرسالة كانت تُسقط ولا تُعاد.
+
+🔧 التصحيح
+──────────
+تم تغيير السطر إلى:
+async with message.process(requeue=True)
+
+السلوك الجديد:
+┌─────────────────────────────────────────────────┐
+│ نجاح PostgreSQL   → ACK (إزالة من الطابور)      │
+│ تكرار message_id  → ACK (idempotent no-op)      │
+│ فشل PostgreSQL    → requeue (إعادة للطابور)     │
+└─────────────────────────────────────────────────┘
+
+⚠️  تنبيه مؤقت (سيُحل في Day 4)
+────────────────────────────────
+requeue=True بدون حد أقصى للمحاولات = حلقة لا نهائية
+إذا استمر PostgreSQL في التعطل.
+
+Day 4 سيضيف:
+- x-delivery-limit: 3 (حد أقصى للمحاولات)
+- DLQ (طابور الرسائل الميتة)
+- رسائل تستنفد المحاولات تنتقل إلى DLQ بدل الحلقة
+
+📁 الملفات المعدلة
+──────────────────
+✏️  worker/processor.py  (تغيير سطر واحد + تعليق)
+
+📁 الملفات غير المعدلة
+──────────────────────
+✓ docker-compose.yml
+✓ api/ (جميع الملفات)
+✓ worker/consumer.py
+✓ worker/services/postgres.py
+✓ db/init.sql
+✓ tests/
+
+🧪 التحقق
+─────────
+docker compose up -d --build worker
+
+# محاكاة فشل PostgreSQL
+docker compose stop postgres
+curl -X POST http://localhost:8000/api/v1/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"message_id":"<uuid>","customer_id":"cust-001","text":"اختبار فشل PG","channel":"web"}'
+
+# الرسالة تُعاد إلى الطابور (لا تُفقد)
+docker compose logs worker --tail 5
+
+# إعادة PostgreSQL
+docker compose start postgres
+sleep 5
+
+# الرسالة تُعالج بنجاح
+docker compose logs worker --tail 10
+docker compose exec postgres psql -U reliability -d reliability_lab \
+  -c "SELECT message_id, text, status FROM messages WHERE text LIKE '%فشل%';"
+
+✅ الحالة
+─────────
+Day 2.1 — مكتمل
+جاهز للانتقال إلى Day 3 (Elasticsearch)

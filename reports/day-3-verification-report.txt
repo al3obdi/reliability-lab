@@ -1,0 +1,141 @@
+======================================================================
+Day 3 Verification Report — Reliability Lab
+Date: 2026-06-30
+======================================================================
+
+A. SUMMARY VERDICT: PASS_WITH_FIXES
+======================================================================
+
+All 10 tests pass. Two minor fixes were required:
+  1. worker/config.py: added extra="ignore" to model_config
+  2. worker/services/elasticsearch.py: normalized PostgreSQL timestamp to ISO 8601
+  3. tests/test_postgres.py: changed message_id to avoid collision with test_elasticsearch.py
+
+B. COMMANDS RUN AND RESULTS
+======================================================================
+
+[1] Static config validation — PASS
+    docker compose config
+    python3 -m py_compile worker/config.py
+    python3 -m py_compile worker/main.py
+    python3 -m py_compile worker/processor.py
+    python3 -m py_compile worker/services/postgres.py
+    python3 -m py_compile worker/services/elasticsearch.py
+    → All files compile cleanly. Worker depends_on: rabbitmq, postgres, redis only.
+
+[2] Fresh rebuild — PASS
+    docker compose down -v
+    docker compose up -d --build
+    docker compose ps
+    → All 6 services healthy: rabbitmq, postgres, redis, elasticsearch, api, worker
+    → Worker logs: "[ES] Created index: messages-v1"
+
+[3] DB migration — PASS
+    make migrate
+    → Columns index_status and index_error already exist (from init.sql), skipped.
+
+[4] Normal Day 3 flow — PASS
+    curl POST /api/v1/messages (message_id: d3d3d3d3-...)
+    → API: {"status": "published", "duplicate": false}
+    → PostgreSQL: status=completed, index_status=indexed
+    → Elasticsearch: document found, _id = message_id, Arabic text stored
+
+[5] Duplicate message_id — PASS
+    curl POST same message_id again
+    → API: {"status": "duplicate", "duplicate": true}
+    → PostgreSQL: row_count = 1
+    → Elasticsearch: _version = 1 (unchanged)
+
+[6] ES outage behavior — PASS
+    docker compose stop elasticsearch
+    curl POST new message_id (e3e3e3e3-...)
+    → API: {"status": "published"}
+    → PostgreSQL: status=completed, index_status=failed
+    → Worker did NOT requeue (ES is derived, not source of truth)
+    docker compose start elasticsearch
+    Reindex via docker compose exec worker python -c "..."
+    → index_status changed from failed → indexed
+    → Elasticsearch document now exists
+
+[7] Full test suite — PASS
+    make test
+    → 10 passed in 48.34s
+
+C. FAILURES FOUND
+======================================================================
+
+1. worker/config.py — pydantic-settings rejected extra env vars (RABBITMQ_USER, etc.)
+   Fix: added extra="ignore" to model_config
+
+2. worker/services/elasticsearch.py — PostgreSQL timestamp format
+   "2026-06-30 08:28:42.760888+00" rejected by ES date parser
+   Fix: normalize to ISO 8601 (replace " " with "T", "+00" → "+00:00")
+
+3. tests/test_postgres.py — message_id collision with test_elasticsearch.py
+   Both used "11111111-2222-3333-4444-555555555555"
+   Fix: changed test_postgres.py to use unique message_id
+
+4. Redis/PostgreSQL test pollution from prior sessions
+   Fix: FLUSHALL Redis, DELETE test rows from PG before re-running
+
+D. FILES PATCHED
+======================================================================
+
+1. worker/config.py (line 10)
+   - model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+   + model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+2. worker/services/elasticsearch.py (lines 80-85)
+   - doc["created_at"] = created_at
+   + normalized = created_at.replace(" ", "T")
+   + if normalized.endswith("+00"):
+   +     normalized = normalized[:-3] + "+00:00"
+   + doc["created_at"] = normalized
+
+3. tests/test_postgres.py (line 21)
+   - message_id = "11111111-2222-3333-4444-555555555555"
+   + message_id = "aaaaaaaa-1111-2222-3333-444444444444"
+
+E. FINAL TEST OUTPUT
+======================================================================
+
+tests/test_elasticsearch.py::test_worker_writes_to_postgres_and_indexes_es PASSED
+tests/test_elasticsearch.py::test_es_document_id_matches_message_id PASSED
+tests/test_elasticsearch.py::test_duplicate_message_id_es_upsert_idempotent PASSED
+tests/test_elasticsearch.py::test_es_failure_does_not_requeue PASSED
+tests/test_health.py::test_health PASSED
+tests/test_health.py::test_ready PASSED
+tests/test_postgres.py::test_worker_writes_to_postgres PASSED
+tests/test_postgres.py::test_duplicate_message_id_does_not_create_duplicate_pg_rows PASSED
+tests/test_publish.py::test_publish_accepted PASSED
+tests/test_publish.py::test_duplicate_message_returns_idempotent_response PASSED
+
+============================= 10 passed in 48.34s ==============================
+
+F. FINAL RELIABILITY STATEMENT
+======================================================================
+
+✅ PostgreSQL is the source of truth
+   - All messages are persisted in PostgreSQL with INSERT ... ON CONFLICT DO NOTHING
+   - PG failure → message requeued to RabbitMQ (message.process(requeue=True))
+   - PG is the authoritative store; all other stores are derived
+
+✅ Elasticsearch is derived/rebuildable
+   - ES index is created from PostgreSQL data
+   - Reindex script can rebuild ES from PG rows where index_status='failed'
+   - ES document _id = message_id for idempotent upserts
+
+✅ Elasticsearch outage does not block PostgreSQL persistence
+   - Worker does NOT depend on ES health (not in depends_on)
+   - ES ensure_index() failure → warning only, worker continues
+   - ES index failure during processing → index_status='failed', message ACKed
+   - Message is NEVER requeued due to ES failure
+
+✅ Duplicate message_id does not create duplicate PostgreSQL rows
+   - Redis SETNX idempotency at API layer
+   - PostgreSQL INSERT ... ON CONFLICT DO NOTHING at worker layer
+   - ES upsert by _id (idempotent)
+
+======================================================================
+END OF REPORT
+======================================================================

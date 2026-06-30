@@ -1,0 +1,798 @@
+============================================================
+Day 3 Report — Elasticsearch Indexing + index_status
+Reliability Lab: Arabic Event Processing Pipeline
+============================================================
+
+A. Changed/New Files
+--------------------
+| File                              | Status     |
+|-----------------------------------|------------|
+| worker/services/elasticsearch.py  | NEW        |
+| worker/services/postgres.py       | MODIFIED   |
+| worker/processor.py               | MODIFIED   |
+| worker/config.py                  | MODIFIED   |
+| worker/requirements.txt           | MODIFIED   |
+| worker/main.py                    | MODIFIED   |
+| db/init.sql                       | MODIFIED   |
+| docker-compose.yml                | MODIFIED   |
+| scripts/reindex_failed.py         | NEW        |
+| tests/test_elasticsearch.py       | NEW        |
+| Makefile                          | MODIFIED   |
+| requirements-dev.txt               | MODIFIED   |
+
+
+B. Exact Code
+-------------
+
+=== worker/services/elasticsearch.py (NEW) ===
+
+"""Elasticsearch service — derived search store.
+
+PostgreSQL is the source of truth. Elasticsearch is a rebuildable index.
+ES failures do NOT cause message requeue.
+"""
+
+from elasticsearch import AsyncElasticsearch
+from config import settings
+
+_client: AsyncElasticsearch | None = None
+
+INDEX_NAME = "messages-v1"
+
+INDEX_MAPPING = {
+    "settings": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+        "analysis": {
+            "analyzer": {
+                "arabic_friendly": {
+                    "type": "custom",
+                    "tokenizer": "standard",
+                    "filter": ["lowercase", "arabic_normalization"],
+                }
+            }
+        },
+    },
+    "mappings": {
+        "properties": {
+            "message_id":    {"type": "keyword"},
+            "customer_id":   {"type": "keyword"},
+            "text":          {"type": "text", "analyzer": "arabic_friendly"},
+            "text_normalized": {"type": "text", "analyzer": "arabic_friendly"},
+            "channel":       {"type": "keyword"},
+            "status":        {"type": "keyword"},
+            "created_at":    {"type": "date"},
+        }
+    },
+}
+
+
+async def get_client() -> AsyncElasticsearch:
+    global _client
+    if _client is None:
+        _client = AsyncElasticsearch(settings.elasticsearch_url)
+    return _client
+
+
+async def ensure_index() -> None:
+    """Create the messages-v1 index if it does not exist."""
+    client = await get_client()
+    exists = await client.indices.exists(index=INDEX_NAME)
+    if not exists:
+        await client.indices.create(index=INDEX_NAME, body=INDEX_MAPPING)
+        print(f"[ES] Created index: {INDEX_NAME}", flush=True)
+    else:
+        print(f"[ES] Index already exists: {INDEX_NAME}", flush=True)
+
+
+async def index_message(
+    message_id: str,
+    customer_id: str,
+    text: str,
+    text_normalized: str,
+    channel: str,
+    status: str = "completed",
+    created_at: str | None = None,
+) -> None:
+    """Index a message document in Elasticsearch. Uses message_id as _id for idempotent upserts."""
+    client = await get_client()
+    doc = {
+        "message_id": message_id,
+        "customer_id": customer_id,
+        "text": text,
+        "text_normalized": text_normalized,
+        "channel": channel,
+        "status": status,
+    }
+    if created_at:
+        doc["created_at"] = created_at
+
+    await client.index(index=INDEX_NAME, id=message_id, document=doc, refresh=True)
+
+
+async def get_document(message_id: str) -> dict | None:
+    """Retrieve a document by message_id. Returns None if not found."""
+    client = await get_client()
+    try:
+        result = await client.get(index=INDEX_NAME, id=message_id)
+        return result["_source"]
+    except Exception:
+        return None
+
+
+async def close_client() -> None:
+    global _client
+    if _client:
+        await _client.close()
+        _client = None
+
+
+=== worker/services/postgres.py (MODIFIED — new functions added) ===
+
+async def mark_indexed(message_id: str) -> None:
+    """Set index_status='indexed' for a message."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE messages SET index_status = 'indexed' WHERE message_id = $1",
+            message_id,
+        )
+
+
+async def mark_index_failed(message_id: str, error: str) -> None:
+    """Set index_status='failed' and record the error."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE messages SET index_status = 'failed', index_error = $2 WHERE message_id = $1",
+            message_id, error,
+        )
+
+
+async def get_failed_index_rows(limit: int = 100) -> list[dict]:
+    """Return rows where index_status='failed' for reindexing."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT message_id, customer_id, text, text_normalized, channel, status,
+                   created_at::text AS created_at
+            FROM messages
+            WHERE index_status = 'failed'
+            ORDER BY created_at
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [dict(r) for r in rows]
+
+
+=== worker/processor.py (MODIFIED) ===
+
+import json
+import aio_pika
+from services.postgres import insert_message, mark_indexed, mark_index_failed
+from services.elasticsearch import index_message
+
+
+async def process_message(message: aio_pika.IncomingMessage) -> None:
+    """Process a single message: parse, normalize, write to PG, index to ES, ACK.
+
+    Reliability rules (Day 3):
+      - PostgreSQL failure → requeue (PG is source of truth).
+      - Elasticsearch failure → do NOT requeue (ES is derived, rebuildable).
+      - On ES failure: set index_status='failed' + index_error, then ACK.
+    """
+    async with message.process(requeue=True):
+        body = json.loads(message.body.decode())
+        msg_id = body["message_id"]
+        customer_id = body["customer_id"]
+        text = body["text"]
+        channel = body.get("channel", "web")
+
+        # Normalize: strip, collapse whitespace
+        text_normalized = " ".join(text.split())
+
+        # 1. Write to PostgreSQL (source of truth)
+        inserted = await insert_message(msg_id, customer_id, text_normalized, channel)
+
+        if inserted:
+            print(f"[WORKER] Stored: {msg_id} — {text[:60]}", flush=True)
+        else:
+            print(f"[WORKER] Duplicate (PG): {msg_id}", flush=True)
+
+        # 2. Attempt Elasticsearch indexing (derived store)
+        try:
+            await index_message(
+                message_id=msg_id,
+                customer_id=customer_id,
+                text=text,
+                text_normalized=text_normalized,
+                channel=channel,
+                status="completed",
+            )
+            await mark_indexed(msg_id)
+            print(f"[WORKER] Indexed: {msg_id}", flush=True)
+        except Exception as exc:
+            error_str = str(exc)[:500]
+            await mark_index_failed(msg_id, error_str)
+            print(f"[WORKER] ES index failed (PG ok): {msg_id} — {error_str}", flush=True)
+            # Do NOT requeue — ES is derived, PG is the source of truth
+
+
+=== worker/config.py (MODIFIED) ===
+
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    rabbitmq_url: str = "amqp://guest:***@localhost:5672/"
+    database_url: str = "postgresql://postgres:***@localhost:5432/postgres"
+    redis_url: str = "redis://localhost:***@rabbitmq:5672/
+      DATABASE_URL: postgresql://${PG_USER:***@postgres:5432/reliability_lab
+      REDIS_URL: redis://redis:***@rabbitmq:5672/
+      DATABASE_URL: postgresql://${PG_USER:***@postgres:5432/reliability_lab
+      REDIS_URL: redis://redis:6379/0
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+
+=== worker/requirements.txt (MODIFIED) ===
+
+aio-pika==9.4.3
+redis==5.0.8
+asyncpg==0.29.0
+pydantic-settings==2.5.2
+elasticsearch[async]==8.15.1
+
+
+=== worker/main.py (MODIFIED) ===
+
+import asyncio
+from consumer import start_consumer
+from services.postgres import get_pool, close_pool
+from services.elasticsearch import ensure_index, close_client
+
+
+async def main():
+    # Warm up the PostgreSQL pool before consuming
+    await get_pool()
+    print("[WORKER] PostgreSQL pool ready", flush=True)
+
+    # Ensure Elasticsearch index exists
+    await ensure_index()
+
+    connection = await start_consumer()
+    try:
+        await asyncio.Future()  # run forever
+    finally:
+        await connection.close()
+        await close_pool()
+        await close_client()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+
+=== db/init.sql (MODIFIED) ===
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TYPE message_status AS ENUM (
+    'pending', 'processing', 'completed', 'failed', 'dead_lettered'
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    message_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id     VARCHAR(64) NOT NULL,
+    text            TEXT NOT NULL,
+    text_normalized TEXT,
+    channel         VARCHAR(32) NOT NULL DEFAULT 'web',
+    status          message_status NOT NULL DEFAULT 'pending',
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    error_reason    TEXT,
+    index_status    VARCHAR(30) NOT NULL DEFAULT 'pending',   -- NEW
+    index_error     TEXT,                                      -- NEW
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processed_at    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_customer_created
+    ON messages (customer_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_status
+    ON messages (status) WHERE status IN ('failed', 'dead_lettered');
+
+CREATE INDEX IF NOT EXISTS idx_messages_index_status            -- NEW
+    ON messages (index_status) WHERE index_status = 'failed';
+
+
+=== docker-compose.yml (MODIFIED) ===
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-reliability}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-lab123}
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${PG_USER:-reliability}
+      POSTGRES_PASSWORD: ${PG_PASS:-lab123}
+      POSTGRES_DB: reliability_lab
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: pg_isready -U ${PG_USER:-reliability} -d reliability_lab
+      interval: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: redis-cli ping
+      interval: 10s
+      retries: 5
+
+  elasticsearch:                                          # NEW
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.1
+    ports:
+      - "9200:9200"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms256m -Xmx256m"
+    healthcheck:
+      test: curl -s http://localhost:9200/_cluster/health | grep -q '"status":"green"\|"status":"yellow"'
+      interval: 10s
+      retries: 10
+      start_period: 30s
+
+  api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:***@rabbitmq:5672/
+      DATABASE_URL: postgresql://${PG_USER:***@postgres:5432/reliability_lab
+      REDIS_URL: redis://redis:***@rabbitmq:5672/
+      DATABASE_URL: postgresql://${PG_USER:***@postgres:5432/reliability_lab
+      REDIS_URL: redis://redis:6379/0
+      ELASTICSEARCH_URL: http://elasticsearch:9200       # NEW
+    depends_on:
+      rabbitmq:    {condition: service_healthy}
+      postgres:    {condition: service_healthy}
+      redis:       {condition: service_healthy}
+      elasticsearch: {condition: service_healthy}         # NEW
+    restart: unless-stopped
+
+  worker:                                                  # NEW
+    build: ./worker
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:***@rabbitmq:5672/
+      DATABASE_URL: postgresql://${PG_USER:***@postgres:5432/reliability_lab
+      REDIS_URL: redis://redis:***@rabbitmq:5672/
+      DATABASE_URL: postgresql://${PG_USER:***@postgres:5432/reliability_lab
+      REDIS_URL: redis://redis:6379/0
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    depends_on:
+      rabbitmq:    {condition: service_healthy}
+      postgres:    {condition: service_healthy}
+      redis:       {condition: service_healthy}
+      elasticsearch: {condition: service_healthy}
+    restart: unless-stopped
+
+
+=== scripts/reindex_failed.py (NEW) ===
+
+"""Reindex failed Elasticsearch documents from PostgreSQL.
+
+Usage:
+    python scripts/reindex_failed.py
+
+Reads rows where index_status='failed' from PostgreSQL and reindexes them
+into Elasticsearch. On success, updates index_status to 'indexed'.
+"""
+
+import asyncio
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "worker"))
+
+from services.postgres import get_pool, get_failed_index_rows, mark_indexed, mark_index_failed, close_pool
+from services.elasticsearch import get_client, ensure_index, index_message, close_client
+
+
+async def reindex_failed(limit: int = 100) -> int:
+    """Reindex failed rows. Returns count of successfully reindexed."""
+    await ensure_index()
+    rows = await get_failed_index_rows(limit=limit)
+
+    if not rows:
+        print("[REINDEX] No failed rows found.", flush=True)
+        return 0
+
+    print(f"[REINDEX] Found {len(rows)} failed rows.", flush=True)
+    success = 0
+
+    for row in rows:
+        msg_id = row["message_id"]
+        try:
+            await index_message(
+                message_id=msg_id,
+                customer_id=row["customer_id"],
+                text=row["text"],
+                text_normalized=row["text_normalized"] or row["text"],
+                channel=row["channel"],
+                status=row["status"],
+                created_at=row.get("created_at"),
+            )
+            await mark_indexed(msg_id)
+            success += 1
+            print(f"[REINDEX] OK: {msg_id}", flush=True)
+        except Exception as exc:
+            error_str = str(exc)[:500]
+            await mark_index_failed(msg_id, error_str)
+            print(f"[REINDEX] FAIL: {msg_id} — {error_str}", flush=True)
+
+    print(f"[REINDEX] Done: {success}/{len(rows)} succeeded.", flush=True)
+    return success
+
+
+if __name__ == "__main__":
+    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 100
+    count = asyncio.run(reindex_failed(limit=limit))
+    asyncio.run(close_pool())
+    asyncio.run(close_client())
+    sys.exit(0 if count > 0 else 0)
+
+
+=== tests/test_elasticsearch.py (NEW) ===
+
+import subprocess
+import time
+import httpx
+
+
+def _psql(query: str) -> str:
+    """Run a PostgreSQL query via docker exec."""
+    result = subprocess.run(
+        [
+            "docker", "exec", "reliability-lab-postgres-1",
+            "psql", "-U", "reliability", "-d", "reliability_lab",
+            "-t", "-A", "-c", query,
+        ],
+        capture_output=True, text=True, timeout=10,
+    )
+    return result.stdout.strip()
+
+
+def _es_get(message_id: str) -> dict | None:
+    """Get a document from Elasticsearch by message_id."""
+    import urllib.request
+    import json
+    url = f"http://localhost:9200/messages-v1/_doc/{message_id}"
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+            return data.get("_source")
+    except Exception:
+        return None
+
+
+def test_worker_writes_to_postgres_and_indexes_es(api_url):
+    """Publish a message, verify PG row + ES document exist."""
+    message_id = "11111111-2222-3333-4444-555555555555"
+
+    payload = {
+        "message_id": message_id,
+        "customer_id": "cust-es-test",
+        "text": "اختبار الفهرسة في Elasticsearch",
+        "channel": "web",
+    }
+    r = httpx.post(f"{api_url}/api/v1/messages", json=payload)
+    assert r.status_code == 202
+    assert r.json()["status"] == "published"
+
+    time.sleep(4)
+
+    # Verify PostgreSQL
+    row = _psql(
+        f"SELECT message_id, customer_id, index_status FROM messages WHERE message_id = '{message_id}'"
+    )
+    assert row != "", "Message not found in PostgreSQL"
+    assert message_id in row
+    assert "cust-es-test" in row
+    assert "indexed" in row, f"Expected index_status=indexed, got: {row}"
+
+    # Verify Elasticsearch
+    doc = _es_get(message_id)
+    assert doc is not None, "Document not found in Elasticsearch"
+    assert doc["message_id"] == message_id
+    assert doc["customer_id"] == "cust-es-test"
+    assert "اختبار" in doc["text"]
+
+
+def test_es_document_id_matches_message_id(api_url):
+    """Verify ES document _id equals message_id."""
+    message_id = "22222222-3333-4444-5555-666666666666"
+
+    payload = {
+        "message_id": message_id,
+        "customer_id": "cust-es-id",
+        "text": "اختبار تطابق المُعرّف",
+        "channel": "web",
+    }
+    r = httpx.post(f"{api_url}/api/v1/messages", json=payload)
+    assert r.status_code == 202
+
+    time.sleep(4)
+
+    # Query ES directly by _id
+    import urllib.request
+    import json
+    url = f"http://localhost:9200/messages-v1/_doc/{message_id}"
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read())
+        assert data["_id"] == message_id
+        assert data["found"] is True
+
+
+def test_duplicate_message_id_es_upsert_idempotent(api_url):
+    """Send same message_id twice, verify single PG row + ES upsert."""
+    message_id = "33333333-4444-5555-6666-777777777777"
+
+    payload = {
+        "message_id": message_id,
+        "customer_id": "cust-dup-es",
+        "text": "اختبار upsert في Elasticsearch",
+        "channel": "web",
+    }
+
+    r1 = httpx.post(f"{api_url}/api/v1/messages", json=payload)
+    assert r1.status_code == 202
+    assert r1.json()["status"] == "published"
+
+    time.sleep(4)
+
+    r2 = httpx.post(f"{api_url}/api/v1/messages", json=payload)
+    assert r2.status_code == 202
+    assert r2.json()["status"] == "duplicate"
+
+    time.sleep(2)
+
+    # Verify single PG row
+    count = _psql(
+        f"SELECT COUNT(*) FROM messages WHERE message_id = '{message_id}'"
+    )
+    assert count == "1", f"Expected 1 row, found {count}"
+
+    # Verify ES document exists (upserted)
+    doc = _es_get(message_id)
+    assert doc is not None, "ES document should exist after upsert"
+    assert doc["message_id"] == message_id
+
+
+def test_es_failure_does_not_requeue(api_url):
+    """Simulate ES failure: PG row saved, index_status='failed', no requeue.
+
+    This test verifies the reliability rule: ES is derived, PG is source of truth.
+    We stop ES, publish, verify PG row has index_status='failed'.
+    """
+    message_id = "44444444-5555-6666-7777-888888888888"
+
+    # Stop Elasticsearch
+    subprocess.run(
+        ["docker", "stop", "reliability-lab-elasticsearch-1"],
+        capture_output=True, timeout=15,
+    )
+    time.sleep(3)
+
+    try:
+        payload = {
+            "message_id": message_id,
+            "customer_id": "cust-es-fail",
+            "text": "اختبار فشل Elasticsearch",
+            "channel": "web",
+        }
+        r = httpx.post(f"{api_url}/api/v1/messages", json=payload)
+        assert r.status_code == 202
+
+        time.sleep(5)
+
+        # Verify PG row exists with index_status='failed'
+        row = _psql(
+            f"SELECT message_id, index_status, index_error FROM messages WHERE message_id = '{message_id}'"
+        )
+        assert row != "", "Message should exist in PostgreSQL"
+        assert message_id in row
+        assert "failed" in row, f"Expected index_status=failed, got: {row}"
+
+        # Verify ES document does NOT exist
+        doc = _es_get(message_id)
+        assert doc is None, "ES document should not exist when ES is down"
+
+    finally:
+        # Restart Elasticsearch
+        subprocess.run(
+            ["docker", "start", "reliability-lab-elasticsearch-1"],
+            capture_output=True, timeout=15,
+        )
+        time.sleep(15)  # Wait for ES to be ready
+
+
+=== Makefile (MODIFIED) ===
+
+.PHONY: up down logs test clean migrate
+
+up:
+	docker compose up -d --build
+
+down:
+	docker compose down -v
+
+logs:
+	docker compose logs -f
+
+test:
+	python -m pytest tests/ -v
+
+migrate:
+	docker exec reliability-lab-postgres-1 psql -U reliability -d reliability_lab \
+		-c "ALTER TABLE messages ADD COLUMN IF NOT EXISTS index_status VARCHAR(30) NOT NULL DEFAULT 'pending';" \
+		-c "ALTER TABLE messages ADD COLUMN IF NOT EXISTS index_error TEXT;"
+
+clean:
+	docker compose down -v
+	rm -rf .pytest_cache __pycache__
+
+
+=== requirements-dev.txt (MODIFIED) ===
+
+pytest==8.3.3
+httpx==0.27.2
+asyncpg==0.29.0
+redis==5.0.8
+elasticsearch[async]==8.15.1
+
+
+C. ALTER TABLE Migration Command (for existing DB)
+---------------------------------------------------
+
+Option 1 — via Makefile:
+    make migrate
+
+Option 2 — direct:
+    docker exec reliability-lab-postgres-1 psql -U reliability -d reliability_lab \
+      -c "ALTER TABLE messages ADD COLUMN IF NOT EXISTS index_status VARCHAR(30) NOT NULL DEFAULT 'pending';" \
+      -c "ALTER TABLE messages ADD COLUMN IF NOT EXISTS index_error TEXT;"
+
+
+D. Verification Commands
+-------------------------
+
+# 1. Build and start everything
+cd ~/reliability-lab
+docker compose down -v
+docker compose up -d --build
+
+# 2. Wait for all services (ES takes ~30s)
+docker compose ps
+
+# 3. Apply migration to existing DB (if needed)
+make migrate
+
+# 4. Publish a test message
+curl -s -X POST http://localhost:8000/api/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"message_id":"d3d3d3d3-1111-2222-3333-444444444444","customer_id":"cust-day3","text":"اختبار Day 3 مع Elasticsearch","channel":"web"}' | jq
+
+# 5. Wait 3 seconds, then check PostgreSQL index_status
+docker exec reliability-lab-postgres-1 psql -U reliability -d reliability_lab \
+  -c "SELECT message_id, index_status, index_error FROM messages WHERE message_id='d3d3d3d3-1111-2222-3333-444444444444';"
+
+# 6. Query Elasticsearch document
+curl -s http://localhost:9200/messages-v1/_doc/d3d3d3d3-1111-2222-3333-444444444444 | jq
+
+# 7. Check worker logs
+docker compose logs worker | tail -20
+
+# 8. Run all tests
+make test
+
+
+E. Expected Outputs
+-------------------
+
+Step 4 (curl publish):
+{
+  "status": "published",
+  "message_id": "d3d3d3d3-1111-2222-3333-444444444444",
+  "duplicate": false,
+  "published_at": "2026-06-30T..."
+}
+
+Step 5 (psql):
+            message_id             | index_status | index_error
+-----------------------------------+--------------+-------------
+ d3d3d3d3-1111-2222-3333-444444444444 | indexed      |
+
+Step 6 (ES query):
+{
+  "_id": "d3d3d3d3-1111-2222-3333-444444444444",
+  "_source": {
+    "message_id": "d3d3d3d3-1111-2222-3333-444444444444",
+    "customer_id": "cust-day3",
+    "text": "اختبار Day 3 مع Elasticsearch",
+    "text_normalized": "اختبار Day 3 مع Elasticsearch",
+    "channel": "web",
+    "status": "completed"
+  }
+}
+
+Step 8 (make test):
+tests/test_health.py::test_health PASSED
+tests/test_health.py::test_ready PASSED
+tests/test_publish.py::test_publish_accepted PASSED
+tests/test_publish.py::test_duplicate_message_returns_idempotent_response PASSED
+tests/test_postgres.py::test_worker_writes_to_postgres PASSED
+tests/test_postgres.py::test_duplicate_message_id_does_not_create_duplicate_pg_rows PASSED
+tests/test_elasticsearch.py::test_worker_writes_to_postgres_and_indexes_es PASSED
+tests/test_elasticsearch.py::test_es_document_id_matches_message_id PASSED
+tests/test_elasticsearch.py::test_duplicate_message_id_es_upsert_idempotent PASSED
+tests/test_elasticsearch.py::test_es_failure_does_not_requeue PASSED
+================== 10 passed ==================
+
+
+F. PG Source-of-Truth + ES Derived-Store Behavior
+--------------------------------------------------
+
+Architecture:
+    RabbitMQ → Worker → PostgreSQL (Source of Truth)
+                      → Elasticsearch (Derived Store)
+
+Reliability Rules:
+
+| Scenario              | PostgreSQL        | Elasticsearch         | RabbitMQ    |
+|-----------------------|-------------------|-----------------------|-------------|
+| Everything normal     | INSERT            | index → 'indexed'     | ACK         |
+| PG duplicate          | DO NOTHING        | upsert → 'indexed'    | ACK         |
+| PG failure            | FAIL              | —                     | REQUEUE     |
+| ES failure            | INSERT            | FAIL → 'failed'       | ACK (no requeue) |
+
+Key principle:
+- PostgreSQL is the ONLY source of truth.
+- Elasticsearch is a derived, rebuildable index.
+- If ES fails, the message is NOT requeued because the data is safely stored in PG.
+- Failed ES rows can be reindexed anytime via: python scripts/reindex_failed.py
+- The reindex script reads index_status='failed' rows from PG and reindexes them into ES.
+
+============================================================
+End of Day 3 Report
+============================================================

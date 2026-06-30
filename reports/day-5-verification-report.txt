@@ -1,0 +1,188 @@
+======================================================================
+Day 5 Verification Report — Reliability Lab
+Date: 2026-06-30
+======================================================================
+
+A. SUMMARY VERDICT: PASS — 20/20 tests
+======================================================================
+
+All 20 tests pass. Day 5 adds Prometheus observability, seed data script,
+SLO verification, and final portfolio polish.
+
+Final: 20 passed in 100.78s
+
+
+B. COMMANDS RUN AND RESULTS
+======================================================================
+
+[1] Static config validation — PASS
+    docker compose config
+    → 7 services: rabbitmq, postgres, redis, elasticsearch, api, worker, prometheus
+
+[2] Fresh rebuild — PASS
+    docker compose down -v
+    docker compose up -d --build
+    docker compose ps
+    → All 7 services healthy
+    → Worker logs: "Metrics server on :9100"
+
+[3] DB migration — PASS
+    make migrate
+    → Columns already exist, skipped.
+
+[4] API /metrics endpoint — PASS
+    curl -s http://localhost:8000/metrics
+    → Returns Prometheus text format
+    → Contains: api_requests_total, api_publish_total, api_duplicate_total,
+      api_publish_failures_total, api_request_duration_seconds
+
+[5] Worker /metrics endpoint — PASS
+    curl -s http://localhost:9100/metrics
+    → Returns Prometheus text format
+    → Contains: worker_messages_processed_total, worker_messages_failed_total,
+      worker_messages_retried_total, worker_messages_dlq_total,
+      worker_pg_insert_total, worker_es_index_total,
+      worker_es_index_failed_total, worker_processing_duration_seconds
+
+[6] Worker /health endpoint — PASS
+    curl -s http://localhost:9100/health
+    → {"status":"ok"}
+
+[7] Prometheus targets — PASS
+    curl -s http://localhost:9090/api/v1/targets
+    → Both api:8000 and worker:9100 targets are UP
+
+[8] Seed messages — PASS
+    python scripts/seed_messages.py --count 50
+    → 50 messages published, 0 duplicates, 0 failures
+
+[9] Metrics increment on publish — PASS
+    curl -s http://localhost:8000/metrics | grep api_publish_total
+    → Counter incremented after seed
+
+[10] Full test suite — PASS
+     make test
+     → 20 passed in 100.78s
+
+
+C. FILES CHANGED (Day 5)
+======================================================================
+
+  ✏️  api/requirements.txt        — added prometheus-client==0.21.1
+  ✏️  worker/requirements.txt     — added prometheus-client==0.21.1
+  ➕  api/metrics.py              — NEW: API Prometheus metrics
+  ➕  worker/metrics.py           — NEW: Worker Prometheus metrics
+  ✏️  api/main.py                 — added /metrics endpoint
+  ✏️  api/routes/messages.py      — wired metrics counters + histogram
+  ✏️  worker/main.py              — added metrics server on :9100
+  ✏️  worker/processor.py         — wired worker metrics counters + histogram
+  ✏️  docker-compose.yml          — added worker port 9100, prometheus service
+  ➕  prometheus.yml              — NEW: Prometheus scrape config
+  ➕  scripts/seed_messages.py    — NEW: Arabic message load generator
+  ➕  scripts/verify_slos.py      — NEW: SLO verification from Prometheus
+  ➕  tests/test_metrics.py       — NEW: 5 metrics tests
+  ✏️  Makefile                    — added seed + verify-slos targets
+
+Files NOT changed:
+  ✓ worker/consumer.py
+  ✓ worker/services/postgres.py
+  ✓ worker/services/elasticsearch.py
+  ✓ db/init.sql
+  ✓ All existing tests
+
+
+D. METRICS SUMMARY
+======================================================================
+
+API Metrics (port 8000, /metrics):
+  - api_requests_total{endpoint,status}     Counter
+  - api_publish_total                       Counter
+  - api_duplicate_total                     Counter
+  - api_publish_failures_total              Counter
+  - api_request_duration_seconds{endpoint}  Histogram
+
+Worker Metrics (port 9100, /metrics):
+  - worker_messages_processed_total         Counter
+  - worker_messages_failed_total           Counter
+  - worker_messages_retried_total          Counter
+  - worker_messages_dlq_total              Counter
+  - worker_pg_insert_total                 Counter
+  - worker_es_index_total                 Counter
+  - worker_es_index_failed_total          Counter
+  - worker_processing_duration_seconds     Histogram
+
+Prometheus (port 9090):
+  - Scrapes api:8000/metrics every 15s
+  - Scrapes worker:9100/metrics every 15s
+  - 7-day retention
+
+
+E. FINAL TEST OUTPUT
+======================================================================
+
+tests/test_health.py::test_health PASSED
+tests/test_health.py::test_ready PASSED
+tests/test_publish.py::test_publish_accepted PASSED
+tests/test_publish.py::test_duplicate_message_returns_idempotent_response PASSED
+tests/test_postgres.py::test_worker_writes_to_postgres PASSED
+tests/test_postgres.py::test_duplicate_message_id_does_not_create_duplicate_pg_rows PASSED
+tests/test_elasticsearch.py::test_worker_writes_to_postgres_and_indexes_es PASSED
+tests/test_elasticsearch.py::test_es_document_id_matches_message_id PASSED
+tests/test_elasticsearch.py::test_duplicate_message_id_es_upsert_idempotent PASSED
+tests/test_elasticsearch.py::test_es_failure_does_not_requeue PASSED
+tests/test_retry_dlq.py::test_pg_failure_routes_to_retry_queue PASSED
+tests/test_retry_dlq.py::test_max_retries_routes_to_dlq PASSED
+tests/test_retry_dlq.py::test_invalid_payload_routes_to_dlq PASSED
+tests/test_retry_dlq.py::test_es_failure_does_not_dlq PASSED
+tests/test_retry_dlq.py::test_duplicate_still_idempotent PASSED
+tests/test_metrics.py::test_api_metrics_endpoint PASSED
+tests/test_metrics.py::test_api_metrics_has_custom_counters PASSED
+tests/test_metrics.py::test_worker_metrics_endpoint PASSED
+tests/test_metrics.py::test_worker_health_endpoint PASSED
+tests/test_metrics.py::test_metrics_increment_on_publish PASSED
+
+======================== 20 passed in 100.78s ========================
+
+
+F. FINAL RELIABILITY STATEMENT
+======================================================================
+
+✅ PostgreSQL is the source of truth
+   - INSERT ... ON CONFLICT DO NOTHING
+   - Transient failure → bounded retry (15s/30s/60s)
+   - Persistent failure → DLQ after 3 attempts
+
+✅ Elasticsearch is derived/rebuildable
+   - ES failure does NOT retry, does NOT go to DLQ
+   - Reindex script rebuilds ES from PG
+
+✅ Bounded retries prevent infinite loops
+   - Max 3 attempts with exponential backoff
+   - Poison messages → DLQ immediately
+
+✅ Redis idempotency unchanged
+   - SET NX with 24h TTL
+
+✅ Prometheus observability
+   - API metrics: requests, publishes, duplicates, failures, latency
+   - Worker metrics: processed, failed, retried, DLQ'd, PG inserts, ES indexes
+   - Prometheus server scraping both every 15s
+
+✅ All 20 tests pass
+   - 10 original Day 3 tests
+   - 5 Day 4 retry/DLQ tests
+   - 5 Day 5 metrics tests
+
+
+G. PRODUCTION GAPS REMAINING
+======================================================================
+
+  - Grafana dashboard
+  - API auth / API keys
+  - Alembic schema migrations
+  - CI pipeline
+  - Load testing
+
+======================================================================
+END OF REPORT
+======================================================================

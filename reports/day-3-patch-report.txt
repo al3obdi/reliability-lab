@@ -1,0 +1,270 @@
+============================================================
+Day 3 Patch Report — Corrected Files
+Reliability Lab: Arabic Event Processing Pipeline
+============================================================
+
+Problems Fixed:
+A. docker-compose.yml — removed ***, valid runnable URLs, removed ES from API depends_on, added worker service
+B. worker/config.py — clean defaults without ***
+C. worker/main.py — ES ensure_index non-fatal, PG pool fatal
+D. worker/services/elasticsearch.py — no changes needed (already correct)
+
+
+============================================================
+A. Corrected docker-compose.yml
+============================================================
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-reliability}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-lab123}
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: ${PG_USER:-reliability}
+      POSTGRES_PASSWORD: ${PG_PASS:-lab123}
+      POSTGRES_DB: reliability_lab
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: pg_isready -U ${PG_USER:-reliability} -d reliability_lab
+      interval: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: redis-cli ping
+      interval: 10s
+      retries: 5
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.1
+    ports:
+      - '9200:9200'
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: 'false'
+      ES_JAVA_OPTS: '-Xms256m -Xmx256m'
+    healthcheck:
+      test: curl -s http://localhost:9200/_cluster/health | grep -q '"status":"green"\|"status":"yellow"'
+      interval: 10s
+      retries: 10
+      start_period: 30s
+
+  api:
+    build: ./api
+    ports:
+      - '8000:8000'
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-reliability}:${RABBITMQ_PASS:-lab123}@rabbitmq:5672/
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: ./worker
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-reliability}:${RABBITMQ_PASS:-lab123}@rabbitmq:5672/
+      DATABASE_URL: postgresql://${PG_USER:-reliability}:${PG_PASS:-lab123}@postgres:5432/reliability_lab
+      REDIS_URL: redis://redis:6379/0
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+Key fixes:
+- API: NO elasticsearch in depends_on (only rabbitmq, postgres, redis)
+- API: RABBITMQ_URL uses ${RABBITMQ_USER:-reliability}:${RABBITMQ_PASS:-lab123} (not ***)
+- API: REDIS_URL is redis://redis:6379/0 (not ***)
+- Worker: depends_on includes elasticsearch
+
+
+============================================================
+B. Corrected worker/config.py
+============================================================
+
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    rabbitmq_url: str = "amqp://reliability:lab123@localhost:5672/"
+    database_url: str = "postgresql://reliability:lab123@localhost:5432/reliability_lab"
+    redis_url: str = "redis://localhost:6379/0"
+    elasticsearch_url: str = "http://localhost:9200"
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+
+settings = Settings()
+
+Key fixes:
+- rabbitmq_url: "amqp://reliability:lab123@localhost:5672/" (not ***)
+- database_url: "postgresql://reliability:lab123@localhost:5432/reliability_lab" (not ***)
+- redis_url: "redis://localhost:6379/0" (unchanged, was already clean)
+- elasticsearch_url: "http://localhost:9200" (unchanged)
+
+
+============================================================
+C. Corrected worker/main.py
+============================================================
+
+import asyncio
+from consumer import start_consumer
+from services.postgres import get_pool, close_pool
+from services.elasticsearch import ensure_index, close_client
+
+
+async def main():
+    # PostgreSQL pool is FATAL — worker cannot function without it
+    await get_pool()
+    print("[WORKER] PostgreSQL pool ready", flush=True)
+
+    # Elasticsearch is NON-FATAL — derived store, can be rebuilt later
+    try:
+        await ensure_index()
+    except Exception as exc:
+        print(f"[WORKER] WARNING: Elasticsearch unavailable ({exc}) — continuing without ES", flush=True)
+
+    connection = await start_consumer()
+    try:
+        await asyncio.Future()  # run forever
+    finally:
+        await connection.close()
+        await close_pool()
+        await close_client()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+Key fixes:
+- PG pool failure → fatal (worker exits, no try/except)
+- ES ensure_index() failure → non-fatal (try/except, warning, continue)
+- During processing, ES index failure → index_status='failed' + ACK (already in processor.py)
+
+
+============================================================
+D. worker/services/elasticsearch.py — No changes needed
+============================================================
+
+The existing file is already correct. No modifications required.
+
+
+============================================================
+E. Verification Commands
+============================================================
+
+cd ~/reliability-lab
+
+# 1. Validate syntax
+docker compose config
+python3 -m py_compile worker/config.py
+python3 -m py_compile worker/main.py
+
+# 2. Start everything
+docker compose down -v
+docker compose up -d --build
+
+# 3. Wait for ES (~30s), then migrate existing DB
+make migrate
+
+# 4. Publish test message
+curl -s -X POST http://localhost:8000/api/v1/messages   -H "Content-Type: application/json"   -d '{"message_id":"d3d3d3d3-1111-2222-3333-444444444444","customer_id":"cust-day3","text":"اختبار Day 3","channel":"web"}' | python3 -m json.tool
+
+# 5. Check PostgreSQL index_status
+docker exec reliability-lab-postgres-1 psql -U reliability -d reliability_lab   -c "SELECT message_id, index_status FROM messages WHERE message_id='d3d3d3d3-1111-2222-3333-444444444444';"
+
+# 6. Query Elasticsearch
+curl -s http://localhost:9200/messages-v1/_doc/d3d3d3d3-1111-2222-3333-444444444444 | python3 -m json.tool
+
+# 7. Run all tests
+make test
+
+
+============================================================
+F. Expected Outputs
+============================================================
+
+Step 4 (curl publish):
+{
+  "status": "published",
+  "message_id": "d3d3d3d3-1111-2222-3333-444444444444",
+  "duplicate": false,
+  "published_at": "2026-06-30T..."
+}
+
+Step 5 (psql):
+            message_id             | index_status
+-----------------------------------+--------------
+ d3d3d3d3-1111-2222-3333-444444444444 | indexed
+
+Step 6 (ES query):
+{
+  "_id": "d3d3d3d3-1111-2222-3333-444444444444",
+  "_source": {
+    "message_id": "d3d3d3d3-1111-2222-3333-444444444444",
+    "customer_id": "cust-day3",
+    "text": "اختبار Day 3",
+    "text_normalized": "اختبار Day 3",
+    "channel": "web",
+    "status": "completed"
+  }
+}
+
+Step 7 (make test):
+tests/test_health.py::test_health PASSED
+tests/test_health.py::test_ready PASSED
+tests/test_publish.py::test_publish_accepted PASSED
+tests/test_publish.py::test_duplicate_message_returns_idempotent_response PASSED
+tests/test_postgres.py::test_worker_writes_to_postgres PASSED
+tests/test_postgres.py::test_duplicate_message_id_does_not_create_duplicate_pg_rows PASSED
+tests/test_elasticsearch.py::test_worker_writes_to_postgres_and_indexes_es PASSED
+tests/test_elasticsearch.py::test_es_document_id_matches_message_id PASSED
+tests/test_elasticsearch.py::test_duplicate_message_id_es_upsert_idempotent PASSED
+tests/test_elasticsearch.py::test_es_failure_does_not_requeue PASSED
+================== 10 passed ==================
+
+
+============================================================
+NOTE: Platform Redaction
+============================================================
+
+The platform display layer replaces "://user:pass@" patterns with "***"
+in display output only. The actual files on disk are CLEAN — verified via:
+
+  xxd docker-compose.yml  → shows "lab123" not "***"
+  xxd worker/config.py    → shows "lab123" not "***"
+
+The files are runnable and correct.
+
+============================================================
+End of Day 3 Patch Report
+============================================================

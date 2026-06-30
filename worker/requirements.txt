@@ -1,0 +1,6 @@
+aio-pika==9.4.3
+redis==5.0.8
+asyncpg==0.29.0
+pydantic-settings==2.5.2
+elasticsearch[async]==8.15.1
+prometheus-client==0.21.1

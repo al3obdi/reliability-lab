@@ -1,0 +1,223 @@
+======================================================================
+Day 4 Verification Report — Reliability Lab
+Date: 2026-06-30
+======================================================================
+
+A. SUMMARY VERDICT: PASS — 15/15 tests
+======================================================================
+
+All 15 tests pass. Day 4 replaces the unbounded requeue loop (Day 2.1)
+with TTL-based retry queues and a Dead Letter Queue.
+
+Final: 15 passed in 100.95s
+
+
+B. COMMANDS RUN AND RESULTS
+======================================================================
+
+[1] Static config validation — PASS
+    docker compose config
+    python3 -m py_compile worker/processor.py
+    python3 -m py_compile worker/consumer.py
+    python3 -m py_compile api/schemas/message.py
+    → All files compile cleanly.
+
+[2] Fresh rebuild — PASS
+    docker compose down -v
+    docker compose up -d --build
+    docker compose ps
+    → All 6 services healthy: rabbitmq, postgres, redis, elasticsearch, api, worker
+    → Worker logs: "Retry queues: 15s / 30s / 60s → DLQ after 3 attempts"
+
+[3] DB migration — PASS
+    make migrate
+    → Columns index_status and index_error already exist, skipped.
+
+[4] Normal Day 4 flow (happy path) — PASS
+    curl POST /api/v1/messages (valid UUID)
+    → API: {"status": "published", "duplicate": false}
+    → PostgreSQL: status=completed, index_status=indexed
+    → Elasticsearch: document found, _id = message_id
+
+[5] Duplicate message_id — PASS
+    curl POST same message_id again
+    → API: {"status": "duplicate", "duplicate": true}
+    → PostgreSQL: row_count = 1
+    → Elasticsearch: _version = 1 (unchanged)
+
+[6] PostgreSQL transient failure → retry queue — PASS
+    docker compose stop postgres
+    curl POST new message_id
+    → API: {"status": "published"}
+    → Worker logs: "Retry 1/3: ... → events.retry.15s"
+    → Message in events.retry.15s, NOT in DLQ
+    docker compose start postgres
+    → After PG recovery, message processed successfully
+
+[7] PostgreSQL persistent failure → DLQ — PASS
+    docker compose stop postgres
+    curl POST with retry_count=3
+    → Worker logs: "DLQ: ... — PostgreSQLFailure"
+    → Message in events.dlq with full error metadata
+
+[8] Invalid payload → DLQ — PASS
+    Publish message with missing 'text' field directly to RabbitMQ
+    → Worker logs: "DLQ: ... — InvalidPayload"
+    → Message in events.dlq, no retries attempted
+
+[9] ES failure does NOT go to DLQ — PASS
+    docker compose stop elasticsearch
+    curl POST new message_id
+    → PostgreSQL: status=completed, index_status=failed
+    → DLQ count: 0
+    → Worker did NOT retry or DLQ (ES is derived, not source of truth)
+
+[10] Full test suite — PASS
+     make test
+     → 15 passed in 100.95s
+
+
+C. FILES CHANGED (Day 4)
+======================================================================
+
+  ✏️  worker/processor.py        — REWRITTEN: explicit ACK, retry/DLQ logic
+  ✏️  worker/consumer.py         — MODIFIED: declare retry queues + DLQ, pass channel
+  ✏️  api/schemas/message.py     — MODIFIED: added retry_count field
+  ➕  scripts/inspect_dlq.py     — NEW: DLQ inspection/peek/purge
+  ➕  tests/test_retry_dlq.py    — NEW: 5 retry/DLQ tests
+  ✏️  Makefile                   — MODIFIED: added inspect-dlq target
+
+Files NOT changed:
+  ✓ docker-compose.yml
+  ✓ worker/main.py
+  ✓ worker/services/postgres.py
+  ✓ worker/services/elasticsearch.py
+  ✓ db/init.sql
+  ✓ All existing tests
+
+
+D. RABBITMQ TOPOLOGY (Day 4)
+======================================================================
+
+events.exchange (topic, durable)
+  ├── events.queue        (durable) ← events.created.#
+  ├── events.retry.15s    (durable, TTL=15s,  DLX→events.exchange)
+  ├── events.retry.30s    (durable, TTL=30s,  DLX→events.exchange)
+  ├── events.retry.60s    (durable, TTL=60s,  DLX→events.exchange)
+  └── events.dlq          (durable)
+
+No TTL on events.queue — only retry queues have TTL.
+
+
+E. RETRY + DLQ BEHAVIOR
+======================================================================
+
+┌─────────────────────────────────────────────────────────────────┐
+│ Scenario                          │ Destination        │ ACK?   │
+├───────────────────────────────────┼────────────────────┼────────┤
+│ PG success + ES success           │ —                  │ ACK    │
+│ PG success + ES failure            │ — (index=failed)   │ ACK    │
+│ PG failure, retry_count < 3       │ retry.{15s|30s|60s}│ ACK    │
+│ PG failure, retry_count >= 3      │ events.dlq         │ ACK    │
+│ Invalid JSON / missing fields     │ events.dlq         │ ACK    │
+│ Duplicate message_id              │ — (ON CONFLICT)    │ ACK    │
+└─────────────────────────────────────────────────────────────────┘
+
+Retry flow:
+  1. Worker consumes from events.queue
+  2. Attempts PostgreSQL INSERT
+  3. If PG fails:
+     a. retry_count < 3 → publish to retry queue, ACK original
+     b. retry_count >= 3 → publish to DLQ with error metadata, ACK original
+  4. Retry queue TTL expires → dead-letters back to events.exchange
+  5. events.exchange routes to events.queue (events.created.retry)
+  6. Worker picks it up with incremented retry_count
+
+DLQ message format:
+  {
+    "original_payload": {...},
+    "error_type": "PostgreSQLFailure" | "InvalidPayload",
+    "error_message": "...",
+    "retry_count": N,
+    "failed_at": "ISO 8601 timestamp"
+  }
+
+Key rules:
+  - ES failure NEVER retries, NEVER goes to DLQ
+  - ES is derived/rebuildable — PG is the source of truth
+  - Explicit ACK only after successful processing or retry/DLQ publish
+  - retry_count travels in message body (Pydantic field, default 0)
+  - No TTL on main events.queue
+
+
+F. FINAL TEST OUTPUT
+======================================================================
+
+tests/test_health.py::test_health PASSED
+tests/test_health.py::test_ready PASSED
+tests/test_publish.py::test_publish_accepted PASSED
+tests/test_publish.py::test_duplicate_message_returns_idempotent_response PASSED
+tests/test_postgres.py::test_worker_writes_to_postgres PASSED
+tests/test_postgres.py::test_duplicate_message_id_does_not_create_duplicate_pg_rows PASSED
+tests/test_elasticsearch.py::test_worker_writes_to_postgres_and_indexes_es PASSED
+tests/test_elasticsearch.py::test_es_document_id_matches_message_id PASSED
+tests/test_elasticsearch.py::test_duplicate_message_id_es_upsert_idempotent PASSED
+tests/test_elasticsearch.py::test_es_failure_does_not_requeue PASSED
+tests/test_retry_dlq.py::test_pg_failure_routes_to_retry_queue PASSED
+tests/test_retry_dlq.py::test_max_retries_routes_to_dlq PASSED
+tests/test_retry_dlq.py::test_invalid_payload_routes_to_dlq PASSED
+tests/test_retry_dlq.py::test_es_failure_does_not_dlq PASSED
+tests/test_retry_dlq.py::test_duplicate_still_idempotent PASSED
+
+======================== 15 passed in 100.95s ========================
+
+
+G. FINAL RELIABILITY STATEMENT
+======================================================================
+
+✅ PostgreSQL is the source of truth
+   - All messages persisted with INSERT ... ON CONFLICT DO NOTHING
+   - PG transient failure → bounded retry (15s/30s/60s)
+   - PG persistent failure → DLQ after 3 attempts
+   - No message loss — either retried or dead-lettered
+
+✅ Elasticsearch is derived/rebuildable
+   - ES failure does NOT retry, does NOT go to DLQ
+   - PG row saved with index_status='failed'
+   - Reindex script rebuilds ES from PG
+
+✅ Bounded retries prevent infinite loops
+   - Max 3 attempts with exponential backoff (15s → 30s → 60s)
+   - After 3 failures → DLQ with full error metadata
+   - No unbounded requeue — worker capacity protected
+
+✅ Poison messages caught immediately
+   - Invalid JSON → DLQ
+   - Missing required fields → DLQ
+   - No retries for unprocessable messages
+
+✅ Day 3 behavior fully preserved
+   - All 10 original tests still pass
+   - Duplicate idempotency unchanged
+   - ES outage handling unchanged
+   - PG source-of-truth unchanged
+
+✅ Redis idempotency unchanged
+   - SET NX with 24h TTL
+   - Duplicate POST returns duplicate=true
+   - Publish failure → key removed for retry
+
+
+H. PRODUCTION GAPS REMAINING
+======================================================================
+
+  - Observability metrics (Prometheus)
+  - Grafana dashboard
+  - API auth / API keys
+  - Alembic schema migrations
+  - CI pipeline
+  - Load testing
+
+======================================================================
+END OF REPORT
+======================================================================
